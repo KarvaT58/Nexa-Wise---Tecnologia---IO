@@ -1,0 +1,360 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserPlan {
+  BASIC
+  PRO
+  MASTER
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum AuthProvider {
+  EMAIL
+  GOOGLE
+}
+
+enum PendingSignupStatus {
+  OTP_PENDING
+  CHECKOUT_PENDING
+  COMPLETED
+  EXPIRED
+}
+
+enum WhatsAppCampaignStatus {
+  DRAFT
+  SCHEDULED
+  RUNNING
+  PAUSED
+  COMPLETED
+  CANCELED
+  FAILED
+}
+
+enum WhatsAppCampaignMessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  DOCUMENT
+}
+
+enum WhatsAppCampaignJobStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+  SKIPPED
+  CANCELED
+}
+
+enum WhatsAppCampaignAudienceMode {
+  ALL
+  FILTER
+  CUSTOM
+}
+
+model User {
+  id                String                    @id @default(cuid())
+  name              String
+  email             String                    @unique
+  passwordHash      String?
+  image             String?
+  googleId          String?                   @unique
+  emailVerifiedAt   DateTime?
+  plan              UserPlan                  @default(BASIC)
+  role              UserRole                  @default(USER)
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+  passwordResets    PasswordReset[]
+  sessions          Session[]
+  subscriptions     Subscription[]
+  contactOptOuts    ContactOptOut[]
+  whatsappFavorites WhatsAppMessageFavorite[]
+  whatsappHiddenMessages WhatsAppMessageHidden[]
+  whatsappPins      WhatsAppMessagePin[]
+  whatsappReads     WhatsAppConversationRead[]
+  whatsappMediaCaches WhatsAppMediaCache[]
+  whatsappCampaigns WhatsAppCampaign[]
+}
+
+model PendingSignup {
+  id                      String              @id @default(cuid())
+  email                   String              @unique
+  name                    String
+  passwordHash            String?
+  image                   String?
+  googleId                String?             @unique
+  provider                AuthProvider
+  plan                    UserPlan
+  status                  PendingSignupStatus @default(OTP_PENDING)
+  otpHash                 String?
+  otpExpiresAt            DateTime?
+  otpAttempts             Int                 @default(0)
+  emailVerifiedAt         DateTime?
+  stripeCustomerId        String?
+  stripeCheckoutSessionId String?             @unique
+  checkoutExpiresAt       DateTime?
+  createdAt               DateTime            @default(now())
+  updatedAt               DateTime            @updatedAt
+  subscriptions           Subscription[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@index([userId])
+}
+
+model PasswordReset {
+  id        String    @id @default(cuid())
+  userId    String
+  otpHash   String
+  expiresAt DateTime
+  attempts  Int       @default(0)
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@index([userId])
+}
+
+model Subscription {
+  id                   String         @id @default(cuid())
+  userId               String?
+  pendingSignupId      String?
+  stripeCustomerId     String?
+  stripeSubscriptionId String?        @unique
+  stripePriceId        String?
+  plan                 UserPlan
+  status               String
+  currentPeriodEnd     DateTime?
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+  pendingSignup        PendingSignup? @relation(fields: [pendingSignupId], references: [id], onDelete: SetNull)
+  user                 User?          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([pendingSignupId])
+  @@index([stripeCustomerId])
+  @@index([userId])
+}
+
+model ContactOptOut {
+  id        String   @id @default(cuid())
+  userId    String
+  number    String
+  source    String   @default("manual")
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, number])
+  @@index([number])
+}
+
+model WhatsAppMessageFavorite {
+  id           String   @id @default(cuid())
+  userId       String
+  instanceName String
+  remoteJid    String
+  messageId    String
+  keyId        String?
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, instanceName, remoteJid, messageId])
+  @@index([userId])
+  @@index([instanceName, remoteJid])
+}
+
+model WhatsAppMessagePin {
+  id           String   @id @default(cuid())
+  userId       String
+  instanceName String
+  remoteJid    String
+  messageId    String
+  keyId        String?
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, instanceName, remoteJid, messageId])
+  @@index([userId, instanceName, remoteJid, expiresAt])
+}
+
+model WhatsAppMessageHidden {
+  id           String   @id @default(cuid())
+  userId       String
+  instanceName String
+  remoteJid    String
+  messageId    String
+  keyId        String?
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, instanceName, remoteJid, messageId])
+  @@index([userId, instanceName, remoteJid])
+}
+
+model WhatsAppConversationRead {
+  id                String   @id @default(cuid())
+  userId            String
+  instanceName      String
+  remoteJid         String
+  lastReadAt        DateTime @default(now())
+  lastReadMessageId String?
+  lastReadMessageAt DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, instanceName, remoteJid])
+  @@index([userId, lastReadAt])
+}
+
+model WhatsAppMediaCache {
+  id             String   @id @default(cuid())
+  userId         String
+  instanceName   String
+  messageId      String
+  remoteJid      String?
+  mediaType      String?
+  mimetype       String
+  fileName       String?
+  byteLength     Int
+  sha256         String
+  storagePath    String
+  source         String   @default("evolution")
+  sourceUrl      String?
+  lastAccessedAt DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, instanceName, messageId])
+  @@index([userId, instanceName])
+  @@index([sha256])
+  @@index([lastAccessedAt])
+}
+
+model WhatsAppCampaign {
+  id                    String                       @id @default(cuid())
+  userId                String
+  name                  String
+  status                WhatsAppCampaignStatus       @default(DRAFT)
+  audienceMode          WhatsAppCampaignAudienceMode @default(ALL)
+  selectedInstanceNames String[]                     @default([])
+  includedLabels        String[]                     @default([])
+  excludedLabels        String[]                     @default([])
+  selectedContactIds    String[]                     @default([])
+  minDelaySeconds       Int                          @default(45)
+  maxDelaySeconds       Int                          @default(120)
+  dailyLimit            Int                          @default(120)
+  scheduledAt           DateTime?
+  recurring             Boolean                      @default(false)
+  recurrenceDays        String[]                     @default([])
+  recurrenceTime        String?
+  timezone              String                       @default("America/Sao_Paulo")
+  optOutText            String                       @default("Responda PARAR para nao receber mais mensagens.")
+  safetyMaxErrors       Int                          @default(10)
+  activeRunKey          String?
+  preparedAt            DateTime?
+  startedAt             DateTime?
+  pausedAt              DateTime?
+  completedAt           DateTime?
+  createdAt             DateTime                     @default(now())
+  updatedAt             DateTime                     @updatedAt
+  user                  User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages              WhatsAppCampaignMessage[]
+  jobs                  WhatsAppCampaignJob[]
+  events                WhatsAppCampaignEvent[]
+
+  @@index([status])
+  @@index([userId])
+  @@index([scheduledAt])
+}
+
+model WhatsAppCampaignMessage {
+  id             String                      @id @default(cuid())
+  campaignId     String
+  position       Int
+  type           WhatsAppCampaignMessageType @default(TEXT)
+  text           String
+  caption        String?
+  attachments    Json?
+  media          String?
+  mimetype       String?
+  fileName       String?
+  textAfterMedia Boolean                     @default(false)
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @updatedAt
+  campaign       WhatsAppCampaign            @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  jobs           WhatsAppCampaignJob[]
+
+  @@index([campaignId])
+}
+
+model WhatsAppCampaignJob {
+  id                  String                    @id @default(cuid())
+  campaignId          String
+  messageId           String?
+  runKey              String                    @default("initial")
+  instanceName        String
+  instanceDisplayName String
+  contactId           String
+  contactName         String
+  contactNumber       String
+  status              WhatsAppCampaignJobStatus @default(PENDING)
+  scheduledAt         DateTime
+  sentAt              DateTime?
+  deliveredAt         DateTime?
+  readAt              DateTime?
+  attempts            Int                       @default(0)
+  lastError           String?
+  remoteMessageIds    String[]                  @default([])
+  readMessageIds      String[]                  @default([])
+  response            Json?
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+  campaign            WhatsAppCampaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  message             WhatsAppCampaignMessage?  @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  events              WhatsAppCampaignEvent[]
+
+  @@unique([campaignId, contactNumber, runKey])
+  @@index([campaignId])
+  @@index([runKey])
+  @@index([status, scheduledAt])
+  @@index([instanceName])
+}
+
+model WhatsAppCampaignEvent {
+  id         String               @id @default(cuid())
+  campaignId String
+  jobId      String?
+  type       String
+  message    String
+  metadata   Json?
+  createdAt  DateTime             @default(now())
+  campaign   WhatsAppCampaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  job        WhatsAppCampaignJob? @relation(fields: [jobId], references: [id], onDelete: SetNull)
+
+  @@index([campaignId])
+  @@index([jobId])
+  @@index([type])
+}
