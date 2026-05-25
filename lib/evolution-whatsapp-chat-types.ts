@@ -39,6 +39,7 @@ export type WhatsAppChatMessage = {
   keyId?: string | null
   orderKey?: string | null
   reaction?: string | null
+  reactionTargetKeyId?: string | null
   status?: string | null
   timestamp?: string | null
   mediaUrl?: string | null

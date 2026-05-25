@@ -84,6 +84,8 @@ type ModalState = "create" | "edit" | null
 
 const ALL_VALUE = "all"
 const POLLING_INTERVAL_MS = 2500
+const MEDIA_CAPTION_COLLAPSE_CHARS = 700
+const MEDIA_CAPTION_COLLAPSE_LINES = 14
 
 export function WhatsAppGroupsPanel() {
   const [snapshot, setSnapshot] = React.useState<WhatsAppGroupsSnapshot | null>(
@@ -449,7 +451,9 @@ export function WhatsAppGroupsPanel() {
       ? "image"
       : file.type.startsWith("video/")
         ? "video"
-        : "document"
+        : file.type.startsWith("audio/")
+          ? "audio"
+          : "document"
 
     setMedia({
       fileName: file.name || fallbackFileName(mediatype),
@@ -772,7 +776,9 @@ export function WhatsAppGroupsPanel() {
                           ? "Imagem selecionada"
                           : media.mediatype === "video"
                             ? "Video selecionado"
-                            : "Documento selecionado"}
+                            : media.mediatype === "audio"
+                              ? "Audio selecionado"
+                              : "Documento selecionado"}
                       </span>
                     </span>
                     <Button
@@ -795,7 +801,7 @@ export function WhatsAppGroupsPanel() {
                       type="file"
                       className="sr-only"
                       disabled={isBusy}
-                      accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,application/pdf"
+                      accept="image/*,video/*,audio/*,.mp3,.m4a,.ogg,.oga,.wav,.aac,.opus,.webm,.pdf,.doc,.docx,.xls,.xlsx,.txt,application/pdf"
                       onChange={(event) => {
                         void handleUpload(event.target.files?.[0] ?? null)
                         event.currentTarget.value = ""
@@ -1072,19 +1078,30 @@ function MessageBubble({
   onReact: (reaction: string) => void
   onReply: () => void
 }) {
+  const mediaCaption = message.mediaUrl ? getMediaCaption(message) : ""
+  const shouldShowMessageText = message.mediaUrl ? Boolean(mediaCaption) : true
+  const usesMediaCaptionLayout = Boolean(
+    message.mediaUrl && !message.type.includes("sticker")
+  )
+
   return (
     <div
       className={cn(
-        "group/message flex items-start gap-1",
+        "group/message flex w-full items-start gap-1",
         message.fromMe ? "justify-end" : "justify-start"
       )}
     >
       <div
         className={cn(
-          "max-w-[78%] rounded-lg px-3 py-2 text-sm shadow-sm",
+          "min-w-0 rounded-lg text-sm shadow-sm",
+          usesMediaCaptionLayout
+            ? "w-[min(86%,22rem)] p-1"
+            : "w-fit max-w-[min(86%,760px)] px-3 py-2",
           message.fromMe
             ? "rounded-tr-sm bg-primary/20 text-foreground"
-            : "bg-card text-foreground"
+            : "bg-card text-foreground",
+          "relative",
+          message.reaction && "mb-3"
         )}
       >
         {!message.fromMe ? (
@@ -1101,15 +1118,27 @@ function MessageBubble({
         {message.mediaUrl ? (
           <MessageMediaPreview message={message} />
         ) : null}
-        <div className="whitespace-pre-wrap break-words">
-          {message.text || messageTypeLabel(message.type)}
-        </div>
+        {shouldShowMessageText ? (
+          <MessageTextBlock
+            isMediaCaption={Boolean(message.mediaUrl)}
+            text={
+              message.mediaUrl
+                ? mediaCaption
+                : message.text || messageTypeLabel(message.type)
+            }
+          />
+        ) : null}
         <div className="mt-1 flex items-center justify-end gap-1 text-[11px] text-muted-foreground">
           <span>{formatShortTime(message.timestamp)}</span>
           {message.fromMe ? <MessageStatus status={message.status} /> : null}
         </div>
         {message.reaction ? (
-          <div className="mt-1 inline-flex rounded-full bg-background px-1.5 py-0.5 text-xs shadow-sm">
+          <div
+            className={cn(
+              "absolute -bottom-3 z-10 inline-flex min-h-5 min-w-5 items-center justify-center rounded-full bg-background px-1.5 py-0.5 text-sm leading-none shadow-sm ring-1 ring-border/70",
+              message.fromMe ? "right-2" : "left-2"
+            )}
+          >
             {message.reaction}
           </div>
         ) : null}
@@ -1122,6 +1151,40 @@ function MessageBubble({
         onReply={onReply}
       />
     </div>
+  )
+}
+
+function MessageTextBlock({
+  isMediaCaption = false,
+  text,
+}: {
+  isMediaCaption?: boolean
+  text: string
+}) {
+  const [isExpanded, setIsExpanded] = React.useState(false)
+  const shouldCollapse = isMediaCaption && isLongMediaCaption(text)
+
+  return (
+    <>
+      <div
+        className={cn(
+          "whitespace-pre-wrap break-words [overflow-wrap:anywhere]",
+          isMediaCaption && "px-2 pb-1 leading-relaxed",
+          shouldCollapse && !isExpanded && "line-clamp-[18]"
+        )}
+      >
+        {text}
+      </div>
+      {shouldCollapse ? (
+        <button
+          type="button"
+          className="mt-1 px-2 text-xs font-semibold text-primary hover:underline"
+          onClick={() => setIsExpanded((current) => !current)}
+        >
+          {isExpanded ? "Ler menos" : "Ler mais"}
+        </button>
+      ) : null}
+    </>
   )
 }
 
@@ -1196,7 +1259,7 @@ function MessageMediaPreview({ message }: { message: WhatsAppChatMessage }) {
       <img
         src={message.mediaUrl ?? ""}
         alt={message.fileName ?? "Imagem"}
-        className="mb-2 max-h-72 rounded-md object-cover"
+        className="mb-2 aspect-square w-full max-w-full rounded-md object-cover"
       />
     )
   }
@@ -1206,13 +1269,19 @@ function MessageMediaPreview({ message }: { message: WhatsAppChatMessage }) {
       <video
         controls
         src={message.mediaUrl ?? ""}
-        className="mb-2 max-h-72 rounded-md"
+        className="mb-2 aspect-square w-full max-w-full rounded-md bg-black/80 object-cover"
       />
     )
   }
 
   if (message.type.includes("audio")) {
-    return <audio controls src={message.mediaUrl ?? ""} className="mb-2" />
+    return (
+      <audio
+        controls
+        src={message.mediaUrl ?? ""}
+        className="mb-2 w-full max-w-full"
+      />
+    )
   }
 
   return (
@@ -1220,10 +1289,12 @@ function MessageMediaPreview({ message }: { message: WhatsAppChatMessage }) {
       href={message.mediaUrl ?? "#"}
       target="_blank"
       rel="noreferrer"
-      className="mb-2 flex items-center gap-2 rounded-md bg-background/70 p-2 text-xs text-muted-foreground hover:text-foreground"
+      className="mb-2 flex w-full items-center gap-2 rounded-md bg-background/70 p-2 text-xs text-muted-foreground hover:text-foreground"
     >
       <FileIcon className="size-4" />
-      <span>{message.fileName || messageTypeLabel(message.type)}</span>
+      <span className="min-w-0 truncate">
+        {message.fileName || messageTypeLabel(message.type)}
+      </span>
     </a>
   )
 }
@@ -1682,7 +1753,7 @@ function messageTypeLabel(type: string) {
 }
 
 function messageTypeToMediaType(type: string) {
-  if (type.includes("image")) {
+  if (type.includes("image") || type.includes("sticker")) {
     return "image"
   }
 
@@ -1690,7 +1761,28 @@ function messageTypeToMediaType(type: string) {
     return "video"
   }
 
+  if (type.includes("audio")) {
+    return "audio"
+  }
+
   return "document"
+}
+
+function getMediaCaption(message: WhatsAppChatMessage) {
+  const text = message.text.trim()
+
+  if (!text || normalizeText(text) === normalizeText(messageTypeLabel(message.type))) {
+    return ""
+  }
+
+  return text
+}
+
+function isLongMediaCaption(value: string) {
+  return (
+    value.length > MEDIA_CAPTION_COLLAPSE_CHARS ||
+    value.split(/\r?\n/).length > MEDIA_CAPTION_COLLAPSE_LINES
+  )
 }
 
 function MediaIcon({
@@ -1706,6 +1798,10 @@ function MediaIcon({
     return <VideoIcon className="size-4" />
   }
 
+  if (mediatype === "audio") {
+    return <MicIcon className="size-4" />
+  }
+
   return <FileIcon className="size-4" />
 }
 
@@ -1718,6 +1814,10 @@ function fallbackFileName(type: WhatsAppMediaPayload["mediatype"]) {
     return "video.mp4"
   }
 
+  if (type === "audio") {
+    return "audio.ogg"
+  }
+
   return "documento.pdf"
 }
 
@@ -1728,6 +1828,10 @@ function defaultMimeType(type: WhatsAppMediaPayload["mediatype"]) {
 
   if (type === "video") {
     return "video/mp4"
+  }
+
+  if (type === "audio") {
+    return "audio/ogg"
   }
 
   return "application/pdf"

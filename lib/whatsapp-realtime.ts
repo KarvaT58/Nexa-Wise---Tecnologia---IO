@@ -6,6 +6,7 @@ export type WhatsAppRealtimeEvent = {
   id: string
   instanceName?: string | null
   messageId?: string | null
+  presence?: string | null
   receivedAt: string
   remoteJid?: string | null
   type: "sync"
@@ -18,6 +19,9 @@ type RealtimeClient = {
 }
 
 const clients = new Set<RealtimeClient>()
+const latestPresenceEvents = new Map<string, WhatsAppRealtimeEvent>()
+const ACTIVE_PRESENCE_EVENT_MAX_AGE_MS = 15_000
+const ONLINE_PRESENCE_EVENT_MAX_AGE_MS = 75_000
 
 export function createWhatsAppRealtimeStream({
   signal,
@@ -76,6 +80,8 @@ export function createWhatsAppRealtimeStream({
 }
 
 export function publishWhatsAppRealtimeEvent(event: WhatsAppRealtimeEvent) {
+  recordWhatsAppPresenceEvent(event)
+
   for (const client of clients) {
     if (
       event.instanceName &&
@@ -86,6 +92,67 @@ export function publishWhatsAppRealtimeEvent(event: WhatsAppRealtimeEvent) {
 
     client.emit(event)
   }
+}
+
+export function getLatestWhatsAppPresenceEvent({
+  instanceName,
+  remoteJids,
+}: {
+  instanceName: string
+  remoteJids: string[]
+}) {
+  for (const remoteJid of remoteJids) {
+    const key = makePresenceKey(instanceName, remoteJid)
+    const event = latestPresenceEvents.get(key)
+
+    if (event && isFreshPresenceEvent(event)) {
+      return event
+    }
+
+    if (event) {
+      latestPresenceEvents.delete(key)
+    }
+  }
+
+  return null
+}
+
+function isFreshPresenceEvent(event: WhatsAppRealtimeEvent) {
+  const presence = event.presence?.trim().toLowerCase()
+
+  if (!presence || presence.includes("offline") || presence.includes("unavailable")) {
+    return true
+  }
+
+  const receivedAt = Date.parse(event.receivedAt)
+
+  if (!Number.isFinite(receivedAt)) {
+    return false
+  }
+
+  const maxAge =
+    presence.includes("compos") ||
+    presence.includes("typing") ||
+    presence.includes("record")
+      ? ACTIVE_PRESENCE_EVENT_MAX_AGE_MS
+      : ONLINE_PRESENCE_EVENT_MAX_AGE_MS
+
+  return Date.now() - receivedAt <= maxAge
+}
+
+function recordWhatsAppPresenceEvent(event: WhatsAppRealtimeEvent) {
+  if (!event.instanceName || !event.remoteJid || !event.presence) {
+    return
+  }
+
+  latestPresenceEvents.set(
+    makePresenceKey(event.instanceName, event.remoteJid),
+    event
+  )
+}
+
+function makePresenceKey(instanceName: string, remoteJid: string) {
+  return `${instanceName}::${remoteJid}`
 }
 
 function formatSseMessage(eventName: string, data: unknown) {

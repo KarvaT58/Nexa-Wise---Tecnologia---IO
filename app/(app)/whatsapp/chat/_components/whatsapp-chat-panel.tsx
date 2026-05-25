@@ -2,8 +2,10 @@
 
 import * as React from "react"
 import {
+  ArchiveIcon,
   ArrowLeftIcon,
   BanIcon,
+  BellOffIcon,
   BellIcon,
   CheckIcon,
   ChevronDownIcon,
@@ -19,8 +21,10 @@ import {
   HeartIcon,
   ImageIcon,
   InfoIcon,
+  ListPlusIcon,
   Loader2Icon,
   LockIcon,
+  MailOpenIcon,
   Maximize2Icon,
   MessageCircleIcon,
   MicIcon,
@@ -97,6 +101,11 @@ type ChatMessagesResponse = {
   } | null
 }
 
+type PresenceSyncResponse = {
+  event?: WhatsAppRealtimeSyncEvent | null
+  ok: boolean
+}
+
 type MessagePaginationState = {
   hasMore: boolean
   isLoading: boolean
@@ -122,8 +131,43 @@ type MediaPanelTab = "documents" | "links" | "media"
 type PinDurationOption = "168" | "24" | "720"
 type AudioRecorderState = "idle" | "preview" | "recording"
 type UploadKind = "audio" | "document" | "media"
+type ConversationPresenceKind = "offline" | "online" | "recording" | "typing"
+
+type ConversationPresenceState = {
+  expiresAt?: number
+  kind: ConversationPresenceKind
+  receivedAt: number
+}
+
+type ConversationListState = {
+  archived?: boolean
+  blocked?: boolean
+  deleted?: boolean
+  deletedAt?: string | null
+  favorite?: boolean
+  inList?: boolean
+  mutedUntil?: number | null
+  pinnedAt?: string | null
+  unread?: boolean
+}
+
+type WhatsAppRealtimeSyncEvent = {
+  eventName?: string | null
+  fromMe?: boolean | null
+  instanceName?: string | null
+  presence?: string | null
+  receivedAt?: string | null
+  remoteJid?: string | null
+  type?: string | null
+}
 
 const ALL_VALUE = "all"
+const ARCHIVED_VALUE = "__archived__"
+const FAVORITES_VALUE = "__favorites__"
+const LIST_VALUE = "__list__"
+const CONVERSATION_LIST_STORAGE_KEY =
+  "nexa-whatsapp-conversation-list-state-v1"
+const MUTE_ALWAYS = -1
 const POLLING_INTERVAL_MS = 2500
 const SNAPSHOT_REFRESH_INTERVAL_MS = 3000
 const DEFAULT_MESSAGES_PAGE_SIZE = 120
@@ -133,6 +177,10 @@ const DEFAULT_FORWARD_TARGET_LIMIT = 5
 const HIGHLY_FORWARDED_TARGET_LIMIT = 1
 const DELETE_FOR_EVERYONE_WINDOW_MS = 48 * 60 * 60 * 1000
 const EDIT_MESSAGE_WINDOW_MS = 15 * 60 * 1000
+const ACTIVE_PRESENCE_TTL_MS = 9000
+const ONLINE_PRESENCE_TTL_MS = 60000
+const MEDIA_CAPTION_COLLAPSE_CHARS = 700
+const MEDIA_CAPTION_COLLAPSE_LINES = 14
 const PIN_DURATION_OPTIONS: Array<{
   description: string
   label: string
@@ -154,12 +202,46 @@ const PIN_DURATION_OPTIONS: Array<{
     value: "720",
   },
 ]
+const DOCUMENT_UPLOAD_ACCEPT =
+  ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,.rar,application/pdf,text/plain,text/csv,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+const MEDIA_UPLOAD_ACCEPT = "image/*,video/*"
+const AUDIO_UPLOAD_ACCEPT = "audio/*,.mp3,.m4a,.ogg,.oga,.wav,.aac,.opus,.webm"
+const EMOJI_OPTIONS = [
+  "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣",
+  "😊", "😇", "🙂", "🙃", "😉", "😍", "🥰", "😘",
+  "😗", "😙", "😚", "😋", "😛", "😜", "🤪", "😝",
+  "🤑", "🤗", "🤭", "🤫", "🤔", "🫡", "🤐", "🤨",
+  "😐", "😑", "😶", "😏", "😒", "🙄", "😬", "😮‍💨",
+  "🤥", "😌", "😔", "😪", "🤤", "😴", "😷", "🤒",
+  "🤕", "🤢", "🤮", "🤧", "🥵", "🥶", "🥴", "😵",
+  "🤯", "🤠", "🥳", "🥸", "😎", "🤓", "🧐", "😕",
+  "🫤", "😟", "🙁", "☹️", "😮", "😯", "😲", "😳",
+  "🥺", "🥹", "😦", "😧", "😨", "😰", "😥", "😢",
+  "😭", "😱", "😖", "😣", "😞", "😓", "😩", "😫",
+  "🥱", "😤", "😡", "😠", "🤬", "😈", "👿", "💀",
+  "☠️", "💩", "🤡", "👻", "👽", "🤖", "😺", "😸",
+  "😹", "😻", "😼", "😽", "🙀", "😿", "😾", "🙈",
+  "🙉", "🙊", "💋", "💌", "💘", "💝", "💖", "💗",
+  "💓", "💞", "💕", "💟", "❣️", "💔", "❤️", "🧡",
+  "💛", "💚", "💙", "💜", "🤎", "🖤", "🤍", "💯",
+  "💢", "💥", "💫", "💦", "💨", "🕳️", "💬", "👋",
+  "🤚", "🖐️", "✋", "🖖", "👌", "🤌", "🤏", "✌️",
+  "🤞", "🫰", "🤟", "🤘", "🤙", "👈", "👉", "👆",
+  "🖕", "👇", "☝️", "👍", "👎", "✊", "👊", "🤛",
+  "🤜", "👏", "🙌", "🫶", "👐", "🤲", "🤝", "🙏",
+  "✍️", "💪", "🦾", "🧠", "👀", "👁️", "👄", "🔥",
+  "✨", "⭐", "🌟", "⚡", "☀️", "🌙", "🌈", "☕",
+  "🍕", "🍔", "🍟", "🍻", "🥂", "🎉", "🎊", "🎁",
+]
 
 export function WhatsAppChatPanel() {
   const [snapshot, setSnapshot] = React.useState<WhatsAppChatSnapshot | null>(null)
   const [selectedKey, setSelectedKey] = React.useState<string>("")
   const [query, setQuery] = React.useState("")
   const [instanceFilter, setInstanceFilter] = React.useState(ALL_VALUE)
+  const [conversationListState, setConversationListState] = React.useState<
+    Record<string, ConversationListState>
+  >({})
   const [messagesByConversation, setMessagesByConversation] = React.useState<
     Record<string, WhatsAppChatMessage[]>
   >({})
@@ -171,6 +253,9 @@ export function WhatsAppChatPanel() {
   const [chatSearch, setChatSearch] = React.useState("")
   const [chatSearchIndex, setChatSearchIndex] = React.useState(0)
   const [currentTime, setCurrentTime] = React.useState(() => Date.now())
+  const [presenceByConversation, setPresenceByConversation] = React.useState<
+    Record<string, ConversationPresenceState>
+  >({})
   const [isChatSearchOpen, setIsChatSearchOpen] = React.useState(false)
   const [isInfoOpen, setIsInfoOpen] = React.useState(false)
   const [contactPanelView, setContactPanelView] =
@@ -179,9 +264,6 @@ export function WhatsAppChatPanel() {
     React.useState<MediaPanelTab>("media")
   const [contactNote, setContactNote] = React.useState("")
   const [isEditingContactNote, setIsEditingContactNote] = React.useState(false)
-  const [isContactMuted, setIsContactMuted] = React.useState(false)
-  const [isContactFavorite, setIsContactFavorite] = React.useState(false)
-  const [isContactBlocked, setIsContactBlocked] = React.useState(false)
   const [isStartDialogOpen, setIsStartDialogOpen] = React.useState(false)
   const [startInstanceName, setStartInstanceName] = React.useState("")
   const [startQuery, setStartQuery] = React.useState("")
@@ -227,9 +309,6 @@ export function WhatsAppChatPanel() {
   const [isPinning, setIsPinning] = React.useState(false)
   const [highlightedMessageId, setHighlightedMessageId] = React.useState("")
   const messageInputRef = React.useRef<HTMLTextAreaElement | null>(null)
-  const audioUploadInputRef = React.useRef<HTMLInputElement | null>(null)
-  const documentUploadInputRef = React.useRef<HTMLInputElement | null>(null)
-  const mediaUploadInputRef = React.useRef<HTMLInputElement | null>(null)
   const messageRefs = React.useRef<Record<string, HTMLDivElement | null>>({})
   const messagesScrollRef = React.useRef<HTMLDivElement | null>(null)
   const messagesEndRef = React.useRef<HTMLDivElement | null>(null)
@@ -249,7 +328,13 @@ export function WhatsAppChatPanel() {
   const optimisticTimestampRef = React.useRef(0)
   const isLoadingOlderMessagesRef = React.useRef(false)
   const lastAutoScrollKeyRef = React.useRef("")
+  const pendingBottomScrollKeyRef = React.useRef("")
   const snapshotRef = React.useRef<WhatsAppChatSnapshot | null>(null)
+  const hasHydratedConversationListStateRef = React.useRef(false)
+  const hasSkippedInitialConversationListPersistRef = React.useRef(false)
+  const conversationListStateRef = React.useRef<
+    Record<string, ConversationListState>
+  >({})
   const conversationListCacheRef = React.useRef<
     Record<string, WhatsAppConversation>
   >({})
@@ -260,13 +345,60 @@ export function WhatsAppChatPanel() {
     {}
   )
 
+  React.useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        const storedState = parseConversationListState(
+          window.localStorage.getItem(CONVERSATION_LIST_STORAGE_KEY)
+        )
+
+        conversationListStateRef.current = storedState
+        setConversationListState(storedState)
+      } catch {
+        conversationListStateRef.current = {}
+        setConversationListState({})
+      } finally {
+        hasHydratedConversationListStateRef.current = true
+      }
+    }, 0)
+
+    return () => window.clearTimeout(timer)
+  }, [])
+
+  React.useEffect(() => {
+    conversationListStateRef.current = conversationListState
+
+    if (!hasHydratedConversationListStateRef.current) {
+      return
+    }
+
+    if (!hasSkippedInitialConversationListPersistRef.current) {
+      hasSkippedInitialConversationListPersistRef.current = true
+      return
+    }
+
+    try {
+      window.localStorage.setItem(
+        CONVERSATION_LIST_STORAGE_KEY,
+        JSON.stringify(conversationListState)
+      )
+    } catch {
+      // Local preferences are best-effort.
+    }
+  }, [conversationListState])
+
   const selectedConversation = React.useMemo(() => {
     if (!snapshot) {
       return null
     }
 
     const contactConversations = snapshot.conversations.filter(
-      (conversation) => conversation.kind === "contact"
+      (conversation) =>
+        conversation.kind === "contact" &&
+        !isConversationDeleted(
+          conversation,
+          conversationListState[getConversationKey(conversation)]
+        )
     )
 
     const keyedConversation = contactConversations.find(
@@ -277,8 +409,25 @@ export function WhatsAppChatPanel() {
       return keyedConversation ?? null
     }
 
-    return keyedConversation ?? contactConversations[0] ?? null
-  }, [selectedKey, snapshot])
+    return (
+      keyedConversation ??
+      contactConversations.find(
+        (conversation) =>
+          !conversationListState[getConversationKey(conversation)]?.archived
+      ) ??
+      contactConversations[0] ??
+      null
+    )
+  }, [conversationListState, selectedKey, snapshot])
+  const selectedConversationListState = selectedKey
+    ? conversationListState[selectedKey]
+    : undefined
+  const isContactFavorite = Boolean(selectedConversationListState?.favorite)
+  const isContactMuted = isConversationMuted(
+    selectedConversationListState,
+    currentTime
+  )
+  const isContactBlocked = Boolean(selectedConversationListState?.blocked)
 
   const stableContactConversations = React.useMemo(() => {
     if (!snapshot) {
@@ -314,8 +463,11 @@ export function WhatsAppChatPanel() {
       conversationsByKey.set(getConversationKey(selected), selected)
     }
 
-    return sortConversationsByActivity([...conversationsByKey.values()])
-  }, [selectedConversation, snapshot])
+    return sortConversationsForList(
+      [...conversationsByKey.values()],
+      conversationListState
+    )
+  }, [conversationListState, selectedConversation, snapshot])
 
   const selectedMessagesFromSnapshot = React.useMemo(() => {
     if (!selectedConversation) {
@@ -360,6 +512,17 @@ export function WhatsAppChatPanel() {
 
   const selectedInstanceName = selectedConversation?.instanceName ?? ""
   const selectedRemoteJid = selectedConversation?.remoteJid ?? ""
+  const selectedConversationKind = selectedConversation?.kind ?? "contact"
+  const selectedConversationNumber = selectedConversation?.number ?? ""
+  const selectedPresence = selectedConversation
+    ? getConversationPresence(
+        selectedConversation,
+        presenceByConversation,
+        currentTime
+      )
+    : null
+  const selectedPresenceLabel =
+    getConversationPresenceLabel(selectedPresence) ?? "offline"
   const isSelectedConversationLoading =
     Boolean(selectedConversation) &&
     loadingConversationKey === getConversationKey(selectedConversation)
@@ -409,9 +572,14 @@ export function WhatsAppChatPanel() {
         }
 
         const key = getConversationKey(conversation)
+        const listState = conversationListStateRef.current[key]
         latestInboundByConversation[key] = marker
 
         if (!hasHydratedNotificationsRef.current) {
+          continue
+        }
+
+        if (isConversationMuted(listState)) {
           continue
         }
 
@@ -468,6 +636,7 @@ export function WhatsAppChatPanel() {
             closeConversationNotifications(key)
             selectedConversationRef.current = conversation
             selectedKeyRef.current = key
+            pendingBottomScrollKeyRef.current = key
             setSelectedKey(key)
             setLoadingConversationKey(key)
             seenConversationMarkersRef.current[key] =
@@ -647,14 +816,27 @@ export function WhatsAppChatPanel() {
           ) ?? null
 
         if (nextSelected && canMoveSelection) {
-          setSelectedKey(getConversationKey(nextSelected))
+          const nextKey = getConversationKey(nextSelected)
+
+          pendingBottomScrollKeyRef.current = nextKey
+          setSelectedKey(nextKey)
         } else if (!options.remoteJid && !currentSelectedKey) {
           const firstContact = stableNext.conversations.find(
-            (conversation) => conversation.kind === "contact"
+            (conversation) =>
+              conversation.kind === "contact" &&
+              !conversationListStateRef.current[getConversationKey(conversation)]
+                ?.archived &&
+              !isConversationDeleted(
+                conversation,
+                conversationListStateRef.current[getConversationKey(conversation)]
+              )
           )
 
           if (firstContact) {
-            setSelectedKey(getConversationKey(firstContact))
+            const firstKey = getConversationKey(firstContact)
+
+            pendingBottomScrollKeyRef.current = firstKey
+            setSelectedKey(firstKey)
           }
         }
 
@@ -882,6 +1064,10 @@ export function WhatsAppChatPanel() {
 
       seenConversationMarkersRef.current[key] = marker
       closeConversationNotifications(key)
+      updateConversationListState(key, (state) => ({
+        ...state,
+        unread: false,
+      }))
       setSnapshot((current) =>
         current ? markSnapshotConversationRead(current, key) : current
       )
@@ -930,6 +1116,10 @@ export function WhatsAppChatPanel() {
       return
     }
 
+    if (conversationListStateRef.current[key]?.unread) {
+      return
+    }
+
     seenConversationMarkersRef.current[key] = marker
     markConversationAsSeen(selectedConversation)
   }, [
@@ -950,6 +1140,7 @@ export function WhatsAppChatPanel() {
       if (
         document.visibilityState === "visible" &&
         selected &&
+        !conversationListStateRef.current[key]?.unread &&
         seenConversationMarkersRef.current[key] !== marker
       ) {
         seenConversationMarkersRef.current[key] = marker
@@ -974,6 +1165,63 @@ export function WhatsAppChatPanel() {
     }
   }, [])
 
+  const applyRealtimePresence = React.useCallback(
+    (realtimeEvent: WhatsAppRealtimeSyncEvent) => {
+      if (
+        !realtimeEvent.instanceName ||
+        !realtimeEvent.remoteJid ||
+        !realtimeEvent.presence ||
+        realtimeEvent.fromMe
+      ) {
+        return false
+      }
+
+      const presence = createConversationPresenceState(
+        realtimeEvent.presence,
+        realtimeEvent.receivedAt
+      )
+
+      if (!presence) {
+        return false
+      }
+
+      const keys = getPresenceStateKeys(
+        realtimeEvent,
+        conversationListCacheRef.current
+      )
+
+      setPresenceByConversation((current) => {
+        const now = Date.now()
+        let changed = false
+        const next = { ...current }
+
+        for (const key of keys) {
+          const previous = current[key]
+
+          if (shouldKeepActivePresence(previous, presence, now)) {
+            continue
+          }
+
+          if (
+            previous?.kind === presence.kind &&
+            previous.expiresAt === presence.expiresAt &&
+            previous.receivedAt === presence.receivedAt
+          ) {
+            continue
+          }
+
+          next[key] = presence
+          changed = true
+        }
+
+        return changed ? next : current
+      })
+
+      return true
+    },
+    []
+  )
+
   React.useEffect(() => {
     if (typeof window === "undefined" || !("EventSource" in window)) {
       return
@@ -995,13 +1243,23 @@ export function WhatsAppChatPanel() {
         })
       }, 250)
     }
+    const handleRealtimeSync = (event: MessageEvent<string>) => {
+      const realtimeEvent = parseRealtimeSyncEvent(event.data)
+      const handledPresence = realtimeEvent
+        ? applyRealtimePresence(realtimeEvent)
+        : false
 
-    eventSource.addEventListener("sync", scheduleRefresh)
-    eventSource.addEventListener("message", scheduleRefresh)
+      if (!handledPresence) {
+        scheduleRefresh()
+      }
+    }
+
+    eventSource.addEventListener("sync", handleRealtimeSync)
+    eventSource.addEventListener("message", handleRealtimeSync)
 
     return () => {
-      eventSource.removeEventListener("sync", scheduleRefresh)
-      eventSource.removeEventListener("message", scheduleRefresh)
+      eventSource.removeEventListener("sync", handleRealtimeSync)
+      eventSource.removeEventListener("message", handleRealtimeSync)
       eventSource.close()
 
       if (realtimeSyncTimerRef.current) {
@@ -1009,15 +1267,89 @@ export function WhatsAppChatPanel() {
         realtimeSyncTimerRef.current = null
       }
     }
-  }, [fetchSnapshot])
+  }, [applyRealtimePresence, fetchSnapshot])
 
   React.useEffect(() => {
     const interval = window.setInterval(() => {
-      setCurrentTime(Date.now())
-    }, 15000)
+      const now = Date.now()
+
+      setCurrentTime(now)
+      setPresenceByConversation((current) => {
+        let changed = false
+        const next = { ...current }
+
+        for (const [key, presence] of Object.entries(current)) {
+          if (!presence.expiresAt || presence.expiresAt > now) {
+            continue
+          }
+
+          delete next[key]
+          changed = true
+        }
+
+        return changed ? next : current
+      })
+    }, 2500)
 
     return () => window.clearInterval(interval)
   }, [])
+
+  React.useEffect(() => {
+    if (
+      !selectedInstanceName ||
+      !selectedRemoteJid ||
+      selectedConversationKind !== "contact"
+    ) {
+      return
+    }
+
+    let isActive = true
+    const applyOfflineFallback = () =>
+      applyRealtimePresence({
+        instanceName: selectedInstanceName,
+        presence: "offline",
+        receivedAt: new Date().toISOString(),
+        remoteJid: selectedRemoteJid,
+        type: "sync",
+      })
+    const syncPresence = async () => {
+      try {
+        const response = await syncConversationPresence({
+          instanceName: selectedInstanceName,
+          number: selectedConversationNumber,
+          remoteJid: selectedRemoteJid,
+        })
+
+        if (!isActive) {
+          return
+        }
+
+        if (!response.event || !applyRealtimePresence(response.event)) {
+          applyOfflineFallback()
+        }
+      } catch {
+        if (isActive) {
+          applyOfflineFallback()
+        }
+      }
+    }
+
+    void syncPresence()
+    const interval = window.setInterval(() => {
+      void syncPresence()
+    }, ONLINE_PRESENCE_TTL_MS / 2)
+
+    return () => {
+      isActive = false
+      window.clearInterval(interval)
+    }
+  }, [
+    applyRealtimePresence,
+    selectedConversationKind,
+    selectedConversationNumber,
+    selectedInstanceName,
+    selectedRemoteJid,
+  ])
 
   React.useEffect(
     () => () => {
@@ -1078,6 +1410,8 @@ export function WhatsAppChatPanel() {
 
     const scrollContainer = messagesScrollRef.current
     const isConversationChange = lastAutoScrollKeyRef.current !== selectedKey
+    const shouldForceBottom =
+      isConversationChange || pendingBottomScrollKeyRef.current === selectedKey
     const distanceFromBottom = scrollContainer
       ? scrollContainer.scrollHeight -
         scrollContainer.scrollTop -
@@ -1085,10 +1419,17 @@ export function WhatsAppChatPanel() {
       : 0
     const isNearBottom = distanceFromBottom < 180
 
-    if (isConversationChange || isNearBottom) {
-      messagesEndRef.current?.scrollIntoView({
-        behavior: isConversationChange ? "auto" : "smooth",
+    if (shouldForceBottom || isNearBottom) {
+      window.requestAnimationFrame(() => {
+        messagesEndRef.current?.scrollIntoView({
+          behavior: shouldForceBottom ? "auto" : "smooth",
+          block: "end",
+        })
       })
+
+      if (shouldForceBottom && selectedMessages.length) {
+        pendingBottomScrollKeyRef.current = ""
+      }
     }
 
     lastAutoScrollKeyRef.current = selectedKey
@@ -1115,6 +1456,12 @@ export function WhatsAppChatPanel() {
     const numberQuery = query.replace(/\D/g, "")
 
     return stableContactConversations.filter((conversation) => {
+      const state = conversationListState[getConversationKey(conversation)]
+
+      if (isConversationDeleted(conversation, state)) {
+        return false
+      }
+
       const matchesQuery =
         !normalizedQuery ||
         normalizeText(conversation.name).includes(normalizedQuery) ||
@@ -1122,13 +1469,73 @@ export function WhatsAppChatPanel() {
         (numberQuery
           ? conversation.number.replace(/\D/g, "").includes(numberQuery)
           : false)
-      const matchesInstance =
-        instanceFilter === ALL_VALUE ||
-        conversation.instanceName === instanceFilter
+      if (!matchesQuery) {
+        return false
+      }
 
-      return matchesQuery && matchesInstance
+      return isConversationVisibleInListFilter(
+        conversation,
+        state,
+        instanceFilter
+      )
     })
-  }, [instanceFilter, query, snapshot, stableContactConversations])
+  }, [
+    conversationListState,
+    instanceFilter,
+    query,
+    snapshot,
+    stableContactConversations,
+  ])
+  const archivedConversations = React.useMemo(
+    () =>
+      stableContactConversations.filter((conversation) => {
+        const state = conversationListState[getConversationKey(conversation)]
+
+        return Boolean(
+          state?.archived && !isConversationDeleted(conversation, state)
+        )
+      }),
+    [conversationListState, stableContactConversations]
+  )
+  const archivedUnreadCount = React.useMemo(
+    () =>
+      archivedConversations.reduce(
+        (sum, conversation) =>
+          sum +
+          getConversationUnreadCount(
+            conversation,
+            conversationListState[getConversationKey(conversation)]
+          ),
+        0
+      ),
+    [archivedConversations, conversationListState]
+  )
+  const shouldShowArchivedTab =
+    archivedConversations.length > 0 || instanceFilter === ARCHIVED_VALUE
+  const normalConversations = React.useMemo(
+    () =>
+      stableContactConversations.filter((conversation) =>
+        isConversationVisibleInListFilter(
+          conversation,
+          conversationListState[getConversationKey(conversation)],
+          ALL_VALUE
+        )
+      ),
+    [conversationListState, stableContactConversations]
+  )
+  const normalUnreadCount = React.useMemo(
+    () =>
+      normalConversations.reduce(
+        (sum, conversation) =>
+          sum +
+          getConversationUnreadCount(
+            conversation,
+            conversationListState[getConversationKey(conversation)]
+          ),
+        0
+      ),
+    [conversationListState, normalConversations]
+  )
 
   const chatSearchResults = React.useMemo(() => {
     const normalizedQuery = normalizeText(chatSearch)
@@ -1331,6 +1738,9 @@ export function WhatsAppChatPanel() {
   const instanceOptions = React.useMemo(
     () => [
       { label: "Todos os WhatsApps", value: ALL_VALUE },
+      { label: "Arquivadas", value: ARCHIVED_VALUE },
+      { label: "Favoritos", value: FAVORITES_VALUE },
+      { label: "Minha lista", value: LIST_VALUE },
       ...(snapshot?.instances.map((instance) => ({
         label: instance.displayName,
         value: instance.instanceName,
@@ -1358,6 +1768,218 @@ export function WhatsAppChatPanel() {
     delete browserNotificationsRef.current[key]
   }
 
+  function updateConversationListState(
+    key: string,
+    updater: (state: ConversationListState) => ConversationListState
+  ) {
+    const current = conversationListStateRef.current
+    const nextState = compactConversationListState(updater(current[key] ?? {}))
+    const next = { ...current }
+
+    if (nextState) {
+      next[key] = nextState
+    } else {
+      delete next[key]
+    }
+
+    conversationListStateRef.current = next
+    setConversationListState(next)
+
+    return { nextState, nextStates: next }
+  }
+
+  function handleArchiveConversation(conversation: WhatsAppConversation) {
+    const key = getConversationKey(conversation)
+    const isArchived = Boolean(conversationListStateRef.current[key]?.archived)
+    const nextArchived = !isArchived
+    const { nextStates } = updateConversationListState(key, (state) => ({
+      ...state,
+      archived: nextArchived,
+      deleted: false,
+    }))
+
+    if (
+      nextArchived &&
+      selectedKeyRef.current === key &&
+      instanceFilter !== ARCHIVED_VALUE
+    ) {
+      selectFallbackConversation(key, nextStates)
+    }
+
+    toast.success(isArchived ? "Conversa desarquivada." : "Conversa arquivada.")
+  }
+
+  function handleMuteConversation(
+    conversation: WhatsAppConversation,
+    mutedUntil: number | null
+  ) {
+    const key = getConversationKey(conversation)
+
+    updateConversationListState(key, (state) => ({
+      ...state,
+      mutedUntil,
+    }))
+    toast.success(
+      mutedUntil ? "Notificacoes silenciadas." : "Notificacoes reativadas."
+    )
+  }
+
+  function handleToggleConversationPin(conversation: WhatsAppConversation) {
+    const key = getConversationKey(conversation)
+    const isPinned = Boolean(conversationListStateRef.current[key]?.pinnedAt)
+
+    updateConversationListState(key, (state) => ({
+      ...state,
+      pinnedAt: isPinned ? null : new Date().toISOString(),
+    }))
+    toast.success(isPinned ? "Conversa desafixada." : "Conversa fixada.")
+  }
+
+  async function handleToggleConversationUnread(
+    conversation: WhatsAppConversation
+  ) {
+    const key = getConversationKey(conversation)
+    const state = conversationListStateRef.current[key]
+    const isUnread = getConversationUnreadCount(conversation, state) > 0
+
+    if (isUnread) {
+      updateConversationListState(key, (current) => ({
+        ...current,
+        unread: false,
+      }))
+      closeConversationNotifications(key)
+      setSnapshot((current) =>
+        current ? markSnapshotConversationRead(current, key) : current
+      )
+
+      await postChatAction({
+        action: "mark-read",
+        instanceName: conversation.instanceName,
+        remoteJid: conversation.remoteJid,
+      }).catch(() => undefined)
+      toast.success("Conversa marcada como lida.")
+      return
+    }
+
+    updateConversationListState(key, (current) => ({
+      ...current,
+      unread: true,
+    }))
+    setSnapshot((current) =>
+      current ? markSnapshotConversationUnread(current, key) : current
+    )
+    toast.success("Conversa marcada como nao lida.")
+  }
+
+  function handleToggleConversationFavorite(conversation: WhatsAppConversation) {
+    const key = getConversationKey(conversation)
+    const isFavorite = Boolean(conversationListStateRef.current[key]?.favorite)
+    const { nextStates } = updateConversationListState(key, (state) => ({
+      ...state,
+      favorite: !isFavorite,
+    }))
+
+    if (
+      isFavorite &&
+      selectedKeyRef.current === key &&
+      instanceFilter === FAVORITES_VALUE
+    ) {
+      selectFallbackConversation(key, nextStates)
+    }
+
+    toast.success(
+      isFavorite ? "Conversa removida dos favoritos." : "Conversa favoritada."
+    )
+  }
+
+  function handleToggleConversationList(conversation: WhatsAppConversation) {
+    const key = getConversationKey(conversation)
+    const isInList = Boolean(conversationListStateRef.current[key]?.inList)
+    const { nextStates } = updateConversationListState(key, (state) => ({
+      ...state,
+      inList: !isInList,
+    }))
+
+    if (
+      isInList &&
+      selectedKeyRef.current === key &&
+      instanceFilter === LIST_VALUE
+    ) {
+      selectFallbackConversation(key, nextStates)
+    }
+
+    toast.success(
+      isInList ? "Conversa removida da lista." : "Conversa adicionada a lista."
+    )
+  }
+
+  async function handleToggleConversationBlock(
+    conversation: WhatsAppConversation
+  ) {
+    const key = getConversationKey(conversation)
+    const isBlocked = Boolean(conversationListStateRef.current[key]?.blocked)
+    const nextBlocked = !isBlocked
+    const confirmed = window.confirm(
+      nextBlocked
+        ? `Bloquear ${conversation.name}?`
+        : `Desbloquear ${conversation.name}?`
+    )
+
+    if (!confirmed) {
+      return
+    }
+
+    updateConversationListState(key, (state) => ({
+      ...state,
+      blocked: nextBlocked,
+    }))
+
+    try {
+      await postChatAction({
+        action: "update-block-status",
+        blocked: nextBlocked,
+        instanceName: conversation.instanceName,
+        remoteJid: conversation.remoteJid,
+      })
+      toast.success(nextBlocked ? "Contato bloqueado." : "Contato desbloqueado.")
+    } catch (error) {
+      updateConversationListState(key, (state) => ({
+        ...state,
+        blocked: isBlocked,
+      }))
+      toast.error(getRequestErrorMessage(error))
+    }
+  }
+
+  function selectFallbackConversation(
+    hiddenKey: string,
+    states: Record<string, ConversationListState>
+  ) {
+    const nextConversation = stableContactConversations.find((conversation) => {
+      const key = getConversationKey(conversation)
+
+      return (
+        key !== hiddenKey &&
+        !isConversationDeleted(conversation, states[key]) &&
+        isConversationVisibleInListFilter(
+          conversation,
+          states[key],
+          instanceFilter
+        )
+      )
+    })
+
+    if (nextConversation) {
+      handleSelectConversation(nextConversation)
+      return
+    }
+
+    selectedConversationRef.current = null
+    selectedKeyRef.current = ""
+    pendingBottomScrollKeyRef.current = ""
+    setSelectedKey("")
+  }
+
   function handleSelectConversation(conversation: WhatsAppConversation) {
     const key = getConversationKey(conversation)
     const hasCachedMessages = Boolean(messagesByConversation[key])
@@ -1366,6 +1988,7 @@ export function WhatsAppChatPanel() {
     cancelForwardSelection()
     selectedConversationRef.current = conversation
     selectedKeyRef.current = key
+    pendingBottomScrollKeyRef.current = key
     setSelectedKey(key)
     setLoadingConversationKey(hasCachedMessages ? "" : key)
     void fetchMessages({
@@ -1379,10 +2002,42 @@ export function WhatsAppChatPanel() {
   async function handleChangeInstanceFilter(value: string) {
     setInstanceFilter(value)
 
+    if (isConversationListFilter(value)) {
+      const nextConversation = stableContactConversations.find((conversation) =>
+        isConversationVisibleInListFilter(
+          conversation,
+          conversationListState[getConversationKey(conversation)],
+          value
+        )
+      )
+
+      if (nextConversation) {
+        handleSelectConversation(nextConversation)
+      } else if (
+        selectedConversation &&
+        !isConversationVisibleInListFilter(
+          selectedConversation,
+          conversationListState[getConversationKey(selectedConversation)],
+          value
+        )
+      ) {
+        selectedConversationRef.current = null
+        selectedKeyRef.current = ""
+        setSelectedKey("")
+      }
+
+      return
+    }
+
     const nextConversation = snapshot?.conversations.find(
       (conversation) =>
         conversation.kind === "contact" &&
-        (value === ALL_VALUE || conversation.instanceName === value)
+        (value === ALL_VALUE || conversation.instanceName === value) &&
+        !conversationListState[getConversationKey(conversation)]?.archived &&
+        !isConversationDeleted(
+          conversation,
+          conversationListState[getConversationKey(conversation)]
+        )
     )
 
     if (nextConversation) {
@@ -1560,20 +2215,6 @@ export function WhatsAppChatPanel() {
     })
   }
 
-  function openUploadPicker(kind: UploadKind) {
-    if (kind === "document") {
-      documentUploadInputRef.current?.click()
-      return
-    }
-
-    if (kind === "audio") {
-      audioUploadInputRef.current?.click()
-      return
-    }
-
-    mediaUploadInputRef.current?.click()
-  }
-
   async function handleUpload(file: File | null, kind: UploadKind) {
     if (!file) {
       return
@@ -1608,6 +2249,23 @@ export function WhatsAppChatPanel() {
       media: dataUrl,
       mediatype,
       mimetype: file.type || defaultMimeType(mediatype),
+    })
+  }
+
+  function handleEmojiSelect(emoji: string) {
+    const input = messageInputRef.current
+    const start = input?.selectionStart ?? message.length
+    const end = input?.selectionEnd ?? message.length
+    const nextCursorPosition = start + emoji.length
+
+    setMessage((current) => `${current.slice(0, start)}${emoji}${current.slice(end)}`)
+
+    window.requestAnimationFrame(() => {
+      messageInputRef.current?.focus()
+      messageInputRef.current?.setSelectionRange(
+        nextCursorPosition,
+        nextCursorPosition
+      )
     })
   }
 
@@ -1921,10 +2579,14 @@ export function WhatsAppChatPanel() {
     }, 1600)
   }
 
-function applyActionSnapshot(nextSnapshot: WhatsAppChatSnapshot) {
-    snapshotRef.current = nextSnapshot
-    setSnapshot(nextSnapshot)
-    const selectedMessagesPayload = nextSnapshot.selected
+  function applyActionSnapshot(nextSnapshot: WhatsAppChatSnapshot) {
+    const stableNext = snapshotRef.current
+      ? mergeSnapshotConversationPreviews(snapshotRef.current, nextSnapshot)
+      : nextSnapshot
+
+    snapshotRef.current = stableNext
+    setSnapshot(stableNext)
+    const selectedMessagesPayload = stableNext.selected
 
     if (selectedMessagesPayload) {
       const payloadKey = makeConversationKey(
@@ -2285,18 +2947,7 @@ function applyActionSnapshot(nextSnapshot: WhatsAppChatSnapshot) {
         remoteJid: selectedConversation.remoteJid,
       })
 
-      setSnapshot(result.snapshot)
-      const selectedMessagesPayload = result.snapshot.selected
-
-      if (selectedMessagesPayload) {
-        setMessagesByConversation((current) => ({
-          ...current,
-          [makeConversationKey(
-            selectedMessagesPayload.instanceName,
-            selectedMessagesPayload.remoteJid
-          )]: selectedMessagesPayload.messages,
-        }))
-      }
+      applyActionSnapshot(result.snapshot)
 
       toast.success(
         nextFavoriteState
@@ -2346,18 +2997,7 @@ function applyActionSnapshot(nextSnapshot: WhatsAppChatSnapshot) {
         remoteJid: selectedConversation.remoteJid,
       })
 
-      setSnapshot(result.snapshot)
-      const selectedMessagesPayload = result.snapshot.selected
-
-      if (selectedMessagesPayload) {
-        setMessagesByConversation((current) => ({
-          ...current,
-          [makeConversationKey(
-            selectedMessagesPayload.instanceName,
-            selectedMessagesPayload.remoteJid
-          )]: selectedMessagesPayload.messages,
-        }))
-      }
+      applyActionSnapshot(result.snapshot)
 
       setPinMessage(null)
       toast.success(
@@ -2494,24 +3134,80 @@ function applyActionSnapshot(nextSnapshot: WhatsAppChatSnapshot) {
     }
   }
 
-  async function handleClearConversation() {
-    if (!selectedConversation) {
+  async function clearConversationForMe(conversation: WhatsAppConversation) {
+    const result = await postChatAction({
+      action: "clear-conversation-for-me",
+      instanceName: conversation.instanceName,
+      remoteJid: conversation.remoteJid,
+    })
+    const key = getConversationKey(conversation)
+
+    applyActionSnapshot(result.snapshot)
+    setMessagesByConversation((current) => ({
+      ...current,
+      [key]: [],
+    }))
+
+    return result
+  }
+
+  async function handleClearConversation(
+    conversation = selectedConversation
+  ) {
+    if (!conversation) {
       return
     }
 
-    if (!window.confirm("Limpar esta conversa apenas da sua tela?")) {
+    if (!window.confirm(`Limpar a conversa com ${conversation.name}?`)) {
       return
     }
 
     try {
-      const result = await postChatAction({
-        action: "clear-conversation-for-me",
-        instanceName: selectedConversation.instanceName,
-        remoteJid: selectedConversation.remoteJid,
-      })
-
-      applyActionSnapshot(result.snapshot)
+      await clearConversationForMe(conversation)
       toast.success("Conversa limpa para voce.")
+    } catch (error) {
+      toast.error(getRequestErrorMessage(error))
+    }
+  }
+
+  async function handleDeleteConversation(conversation: WhatsAppConversation) {
+    const key = getConversationKey(conversation)
+
+    if (!window.confirm(`Apagar a conversa com ${conversation.name}?`)) {
+      return
+    }
+
+    try {
+      await clearConversationForMe(conversation)
+      updateConversationListState(key, (state) => ({
+        ...state,
+        archived: false,
+        deleted: true,
+        deletedAt: new Date().toISOString(),
+      }))
+      delete conversationListCacheRef.current[key]
+      setSnapshot((current) =>
+        current
+          ? {
+              ...current,
+              conversations: current.conversations.filter(
+                (item) => getConversationKey(item) !== key
+              ),
+              totals: getSnapshotTotals(
+                current.conversations.filter(
+                  (item) => getConversationKey(item) !== key
+                ),
+                current.instances.length
+              ),
+            }
+          : current
+      )
+
+      if (selectedKeyRef.current === key) {
+        setSelectedKey("")
+      }
+
+      toast.success("Conversa apagada.")
     } catch (error) {
       toast.error(getRequestErrorMessage(error))
     }
@@ -2522,31 +3218,7 @@ function applyActionSnapshot(nextSnapshot: WhatsAppChatSnapshot) {
       return
     }
 
-    const nextBlocked = !isContactBlocked
-    const confirmed = window.confirm(
-      nextBlocked
-        ? `Bloquear ${selectedConversation.name}?`
-        : `Desbloquear ${selectedConversation.name}?`
-    )
-
-    if (!confirmed) {
-      return
-    }
-
-    setIsContactBlocked(nextBlocked)
-
-    try {
-      await postChatAction({
-        action: "update-block-status",
-        blocked: nextBlocked,
-        instanceName: selectedConversation.instanceName,
-        remoteJid: selectedConversation.remoteJid,
-      })
-      toast.success(nextBlocked ? "Contato bloqueado." : "Contato desbloqueado.")
-    } catch (error) {
-      setIsContactBlocked(!nextBlocked)
-      toast.error(getRequestErrorMessage(error))
-    }
+    await handleToggleConversationBlock(selectedConversation)
   }
 
   if (isLoading && !snapshot) {
@@ -2665,59 +3337,188 @@ function applyActionSnapshot(nextSnapshot: WhatsAppChatSnapshot) {
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto">
+          {instanceFilter === ARCHIVED_VALUE ? (
+            <button
+              type="button"
+              className="flex w-full items-center gap-3 border-b border-border/70 px-4 py-3 text-left transition hover:bg-muted/40"
+              onClick={() => void handleChangeInstanceFilter(ALL_VALUE)}
+            >
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                <MessageCircleIcon className="size-5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-semibold">
+                  Conversas
+                </span>
+                <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                  Voltar para conversas normais
+                </span>
+              </span>
+              <span className="shrink-0">
+                {normalUnreadCount > 0 ? (
+                  <span className="rounded-full bg-primary px-1.5 py-0.5 text-xs font-semibold text-primary-foreground">
+                    {normalUnreadCount}
+                  </span>
+                ) : (
+                  <span className="text-xs text-muted-foreground">
+                    {normalConversations.length}
+                  </span>
+                )}
+              </span>
+            </button>
+          ) : null}
+          {shouldShowArchivedTab ? (
+            <button
+              type="button"
+              className={cn(
+                "flex w-full items-center gap-3 border-b border-border/70 px-4 py-3 text-left transition hover:bg-muted/40",
+                instanceFilter === ARCHIVED_VALUE && "bg-muted/70"
+              )}
+              onClick={() => void handleChangeInstanceFilter(ARCHIVED_VALUE)}
+            >
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                <ArchiveIcon className="size-5" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-semibold">
+                  Arquivadas
+                </span>
+                <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                  Conversas arquivadas
+                </span>
+              </span>
+              <span className="shrink-0">
+                {archivedUnreadCount > 0 ? (
+                  <span className="rounded-full bg-primary px-1.5 py-0.5 text-xs font-semibold text-primary-foreground">
+                    {archivedUnreadCount}
+                  </span>
+                ) : (
+                  <span className="text-xs text-muted-foreground">
+                    {archivedConversations.length}
+                  </span>
+                )}
+              </span>
+            </button>
+          ) : null}
           {filteredConversations.length ? (
             <div className="divide-y divide-border/70">
               {filteredConversations.map((conversation) => {
                 const isSelected =
                   getConversationKey(conversation) ===
                   getConversationKey(selectedConversation)
+                const presence = getConversationPresence(
+                  conversation,
+                  presenceByConversation,
+                  currentTime
+                )
+                const presenceLabel = getConversationPresenceLabel(presence)
+                const conversationState =
+                  conversationListState[getConversationKey(conversation)]
+                const unreadCount = getConversationUnreadCount(
+                  conversation,
+                  conversationState
+                )
 
                 return (
-                  <button
+                  <div
                     key={getConversationKey(conversation)}
-                    type="button"
                     className={cn(
-                      "flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-muted/40",
+                      "group/conversation flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-muted/40",
                       isSelected && "bg-muted/70"
                     )}
-                    onClick={() => void handleSelectConversation(conversation)}
                   >
-                    <AvatarBubble conversation={conversation} />
-                    <span className="min-w-0 flex-1">
-                      <span className="flex items-center gap-2">
-                        <span className="truncate text-sm font-semibold">
-                          {conversation.name}
+                    <button
+                      type="button"
+                      className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                      onClick={() => void handleSelectConversation(conversation)}
+                    >
+                      <AvatarBubble conversation={conversation} presence={presence} />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-2">
+                          <span className="truncate text-sm font-semibold">
+                            {conversation.name}
+                          </span>
+                          {conversationState?.pinnedAt ? (
+                            <PinIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                          ) : null}
+                          {isConversationMuted(conversationState, currentTime) ? (
+                            <BellOffIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                          ) : null}
+                          {conversationState?.favorite ? (
+                            <HeartIcon className="size-3.5 shrink-0 fill-current text-muted-foreground" />
+                          ) : null}
+                          {conversationState?.inList ? (
+                            <ListPlusIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                          ) : null}
+                        </span>
+                        <span
+                          className={cn(
+                            "mt-1 flex min-w-0 items-center gap-1 text-xs text-muted-foreground",
+                            presence &&
+                              presence.kind !== "offline" &&
+                              "font-medium text-primary"
+                          )}
+                        >
+                          {!presenceLabel && conversation.lastMessageFromMe ? (
+                            <MessageStatus status={conversation.lastMessageStatus} />
+                          ) : null}
+                          <span className="min-w-0 truncate">
+                            {presenceLabel && presence?.kind !== "offline" ? (
+                              presenceLabel
+                            ) : (
+                              <>
+                                {conversation.lastMessageFromMe ? "Voce: " : ""}
+                                {conversation.lastMessageText || "Sem mensagens"}
+                              </>
+                            )}
+                          </span>
                         </span>
                       </span>
-                      <span className="mt-1 flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
-                        {conversation.lastMessageFromMe ? (
-                          <MessageStatus status={conversation.lastMessageStatus} />
+                      <span className="flex shrink-0 flex-col items-end gap-2">
+                        <span className="text-xs text-muted-foreground">
+                          {formatConversationTime(
+                            getConversationActivityTimestamp(conversation)
+                          )}
+                        </span>
+                        {unreadCount ? (
+                          <span className="rounded-full bg-primary px-1.5 py-0.5 text-xs font-semibold text-primary-foreground">
+                            {unreadCount}
+                          </span>
                         ) : null}
-                        <span className="min-w-0 truncate">
-                          {conversation.lastMessageFromMe ? "Voce: " : ""}
-                          {conversation.lastMessageText || "Sem mensagens"}
-                        </span>
                       </span>
-                    </span>
-                    <span className="flex shrink-0 flex-col items-end gap-2">
-                      <span className="text-xs text-muted-foreground">
-                        {formatConversationTime(
-                          conversation.lastMessageAt ?? conversation.updatedAt
-                        )}
-                      </span>
-                      {conversation.unreadMessages ? (
-                        <span className="rounded-full bg-primary px-1.5 py-0.5 text-xs font-semibold text-primary-foreground">
-                          {conversation.unreadMessages}
-                        </span>
-                      ) : null}
-                    </span>
-                  </button>
+                    </button>
+                    <ConversationListOptionsMenu
+                      conversation={conversation}
+                      currentTime={currentTime}
+                      isUnread={unreadCount > 0}
+                      state={conversationState}
+                      onArchive={() => handleArchiveConversation(conversation)}
+                      onBlock={() =>
+                        void handleToggleConversationBlock(conversation)
+                      }
+                      onClear={() => void handleClearConversation(conversation)}
+                      onDelete={() => void handleDeleteConversation(conversation)}
+                      onFavorite={() =>
+                        handleToggleConversationFavorite(conversation)
+                      }
+                      onList={() => handleToggleConversationList(conversation)}
+                      onMarkUnread={() =>
+                        void handleToggleConversationUnread(conversation)
+                      }
+                      onMute={(mutedUntil) =>
+                        handleMuteConversation(conversation, mutedUntil)
+                      }
+                      onPin={() => handleToggleConversationPin(conversation)}
+                    />
+                  </div>
                 )
               })}
             </div>
           ) : (
             <div className="flex h-full items-center justify-center p-6 text-center text-sm text-muted-foreground">
-              Nenhuma conversa encontrada.
+              {instanceFilter === ARCHIVED_VALUE
+                ? "Nenhuma conversa arquivada."
+                : "Nenhuma conversa encontrada."}
             </div>
           )}
         </div>
@@ -2727,10 +3528,23 @@ function applyActionSnapshot(nextSnapshot: WhatsAppChatSnapshot) {
           {selectedConversation ? (
             <>
               <div className="flex shrink-0 items-center gap-3 border-b border-border/80 bg-card/50 px-4 py-3">
-                <AvatarBubble conversation={selectedConversation} />
+                <AvatarBubble
+                  conversation={selectedConversation}
+                  presence={selectedPresence}
+                />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-semibold">
                     {selectedConversation.name}
+                  </div>
+                  <div
+                    className={cn(
+                      "mt-0.5 truncate text-xs text-muted-foreground",
+                      selectedPresence &&
+                        selectedPresence.kind !== "offline" &&
+                        "font-medium text-primary"
+                    )}
+                  >
+                    {selectedPresenceLabel}
                   </div>
                 </div>
                 <Button
@@ -2932,7 +3746,8 @@ function applyActionSnapshot(nextSnapshot: WhatsAppChatSnapshot) {
                     media={media}
                     message={message}
                     onMessageChange={setMessage}
-                    onOpenUpload={openUploadPicker}
+                    onEmojiSelect={handleEmojiSelect}
+                    onUpload={(file, kind) => void handleUpload(file, kind)}
                   />
                 ) : audioRecorderState !== "idle" ? (
                   <AudioRecorderComposer
@@ -2949,11 +3764,12 @@ function applyActionSnapshot(nextSnapshot: WhatsAppChatSnapshot) {
                 <div className="flex items-end gap-2">
                   <AttachmentMenu
                     disabled={Boolean(editingMessage)}
-                    onSelect={openUploadPicker}
+                    onUpload={(file, kind) => void handleUpload(file, kind)}
                   />
-                  <Button type="button" size="icon-lg" variant="ghost">
-                    <SmileIcon />
-                  </Button>
+                  <EmojiPickerButton
+                    disabled={Boolean(editingMessage && isSending)}
+                    onSelect={handleEmojiSelect}
+                  />
                   <Textarea
                     ref={messageInputRef}
                     value={message}
@@ -2996,12 +3812,6 @@ function applyActionSnapshot(nextSnapshot: WhatsAppChatSnapshot) {
                   </Button>
                 </div>
                 )}
-                <UploadInputs
-                  audioRef={audioUploadInputRef}
-                  documentRef={documentUploadInputRef}
-                  mediaRef={mediaUploadInputRef}
-                  onUpload={(file, kind) => void handleUpload(file, kind)}
-                />
               </form>
               )}
             </>
@@ -3030,6 +3840,7 @@ function applyActionSnapshot(nextSnapshot: WhatsAppChatSnapshot) {
           mediaCount={contactMediaItems.length}
           mediaItems={contactMediaItems}
           messageCount={selectedMessages.length}
+          presence={selectedPresence}
           onClose={() => {
             setIsInfoOpen(false)
             setContactPanelView("details")
@@ -3043,8 +3854,19 @@ function applyActionSnapshot(nextSnapshot: WhatsAppChatSnapshot) {
           }}
           onRequestAction={(message) => toast.info(message)}
           onToggleBlock={() => void handleToggleContactBlock()}
-          onToggleFavorite={() => setIsContactFavorite((current) => !current)}
-          onToggleMute={() => setIsContactMuted((current) => !current)}
+          onToggleFavorite={() =>
+            selectedConversation
+              ? handleToggleConversationFavorite(selectedConversation)
+              : undefined
+          }
+          onToggleMute={() =>
+            selectedConversation
+              ? handleMuteConversation(
+                  selectedConversation,
+                  isContactMuted ? null : MUTE_ALWAYS
+                )
+              : undefined
+          }
           setMediaPanelTab={setMediaPanelTab}
           setView={setContactPanelView}
           view={contactPanelView}
@@ -3471,6 +4293,125 @@ function applyActionSnapshot(nextSnapshot: WhatsAppChatSnapshot) {
   )
 }
 
+function ConversationListOptionsMenu({
+  conversation,
+  currentTime,
+  isUnread,
+  onArchive,
+  onBlock,
+  onClear,
+  onDelete,
+  onFavorite,
+  onList,
+  onMarkUnread,
+  onMute,
+  onPin,
+  state,
+}: {
+  conversation: WhatsAppConversation
+  currentTime: number
+  isUnread: boolean
+  onArchive: () => void
+  onBlock: () => void
+  onClear: () => void
+  onDelete: () => void
+  onFavorite: () => void
+  onList: () => void
+  onMarkUnread: () => void
+  onMute: (mutedUntil: number | null) => void
+  onPin: () => void
+  state?: ConversationListState
+}) {
+  const isArchived = Boolean(state?.archived)
+  const isBlocked = Boolean(state?.blocked)
+  const isFavorite = Boolean(state?.favorite)
+  const isInList = Boolean(state?.inList)
+  const isMuted = isConversationMuted(state, currentTime)
+  const isPinned = Boolean(state?.pinnedAt)
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            type="button"
+            size="icon-sm"
+            variant="ghost"
+            className="size-7 shrink-0 text-muted-foreground opacity-70 transition hover:text-foreground hover:opacity-100 data-[state=open]:opacity-100"
+            aria-label={`Opcoes de ${conversation.name}`}
+          />
+        }
+      >
+        <ChevronDownIcon />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-64">
+        <DropdownMenuItem onClick={onArchive}>
+          <ArchiveIcon />
+          {isArchived ? "Desarquivar conversa" : "Arquivar conversa"}
+        </DropdownMenuItem>
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            {isMuted ? <BellIcon /> : <BellOffIcon />}
+            {isMuted ? "Reativar notificacoes" : "Silenciar notificacoes"}
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="min-w-44">
+            <DropdownMenuItem
+              onClick={() => onMute(Date.now() + 8 * 60 * 60 * 1000)}
+            >
+              8 horas
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => onMute(Date.now() + 7 * 24 * 60 * 60 * 1000)}
+            >
+              1 semana
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onMute(MUTE_ALWAYS)}>
+              Sempre
+            </DropdownMenuItem>
+            {isMuted ? (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => onMute(null)}>
+                  Reativar agora
+                </DropdownMenuItem>
+              </>
+            ) : null}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        <DropdownMenuItem onClick={onPin}>
+          <PinIcon />
+          {isPinned ? "Desafixar conversa" : "Fixar conversa"}
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onMarkUnread}>
+          <MailOpenIcon />
+          {isUnread ? "Marcar como lida" : "Marcar como nao lida"}
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onFavorite}>
+          <HeartIcon />
+          {isFavorite ? "Remover dos Favoritos" : "Adicionar aos Favoritos"}
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onList}>
+          <ListPlusIcon />
+          {isInList ? "Remover da lista" : "Adicionar a lista"}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem variant="destructive" onClick={onBlock}>
+          <BanIcon />
+          {isBlocked ? "Desbloquear" : "Bloquear"}
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onClear}>
+          <Trash2Icon />
+          Limpar conversa
+        </DropdownMenuItem>
+        <DropdownMenuItem variant="destructive" onClick={onDelete}>
+          <Trash2Icon />
+          Apagar conversa
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
 function MessageBubble({
   conversation,
   currentTime,
@@ -3519,6 +4460,9 @@ function MessageBubble({
   const mediaCaption = message.mediaUrl ? getMediaCaption(message) : ""
   const shouldShowMessageText =
     !isDeleted && (message.mediaUrl ? Boolean(mediaCaption) : true)
+  const usesMediaCaptionLayout = Boolean(
+    !isDeleted && message.mediaUrl && !message.type.includes("sticker")
+  )
   const isSelectionMode = isDeleteSelectionMode || isForwardSelectionMode
   const isSelected = isDeleteSelectionMode
     ? isSelectedForDelete
@@ -3530,7 +4474,7 @@ function MessageBubble({
   return (
     <div
       className={cn(
-        "group/message",
+        "group/message w-full",
         isSelectionMode
           ? "grid grid-cols-[2rem_1fr] items-start gap-2"
           : "flex items-start gap-1",
@@ -3559,17 +4503,22 @@ function MessageBubble({
       ) : null}
       <div
         className={cn(
-          isSelectionMode && "flex min-w-0",
+          "flex min-w-0",
+          !isSelectionMode && "w-full",
           message.fromMe ? "justify-end" : "justify-start"
         )}
       >
       <div
         className={cn(
-          "max-w-[min(72%,680px)] rounded-lg px-3 py-2 text-sm shadow-sm transition",
+          "min-w-0 rounded-lg text-sm shadow-sm transition",
+          usesMediaCaptionLayout
+            ? "w-[min(86%,22rem)] p-1"
+            : "w-fit max-w-[min(86%,760px)] px-3 py-2 pr-8",
           message.fromMe
             ? "rounded-tr-sm bg-primary/20 text-foreground"
             : "bg-card text-foreground",
-          "relative pr-8",
+          "relative",
+          message.reaction && "mb-3",
           isHighlighted && "ring-2 ring-primary/70"
         )}
       >
@@ -3597,11 +4546,14 @@ function MessageBubble({
           <MessageMediaPreview message={message} onOpen={onOpenMedia} />
         ) : null}
         {shouldShowMessageText ? (
-          <div className="whitespace-pre-wrap break-words">
-            {message.mediaUrl
-              ? mediaCaption
-              : message.text || messageTypeLabel(message.type)}
-          </div>
+          <MessageTextBlock
+            isMediaCaption={Boolean(message.mediaUrl)}
+            text={
+              message.mediaUrl
+                ? mediaCaption
+                : message.text || messageTypeLabel(message.type)
+            }
+          />
         ) : null}
         <div className="mt-1 flex items-center justify-end gap-1 text-[11px] text-muted-foreground">
           {message.isPinned ? (
@@ -3615,7 +4567,12 @@ function MessageBubble({
           {message.fromMe ? <MessageStatus status={message.status} /> : null}
         </div>
         {message.reaction ? (
-          <div className="mt-1 inline-flex rounded-full bg-background px-1.5 py-0.5 text-xs shadow-sm">
+          <div
+            className={cn(
+              "absolute -bottom-3 z-10 inline-flex min-h-5 min-w-5 items-center justify-center rounded-full bg-background px-1.5 py-0.5 text-sm leading-none shadow-sm ring-1 ring-border/70",
+              message.fromMe ? "right-2" : "left-2"
+            )}
+          >
             {message.reaction}
           </div>
         ) : null}
@@ -3642,6 +4599,40 @@ function MessageBubble({
       </div>
       </div>
     </div>
+  )
+}
+
+function MessageTextBlock({
+  isMediaCaption = false,
+  text,
+}: {
+  isMediaCaption?: boolean
+  text: string
+}) {
+  const [isExpanded, setIsExpanded] = React.useState(false)
+  const shouldCollapse = isMediaCaption && isLongMediaCaption(text)
+
+  return (
+    <>
+      <div
+        className={cn(
+          "whitespace-pre-wrap break-words [overflow-wrap:anywhere]",
+          isMediaCaption && "px-2 pb-1 leading-relaxed",
+          shouldCollapse && !isExpanded && "line-clamp-[18]"
+        )}
+      >
+        {text}
+      </div>
+      {shouldCollapse ? (
+        <button
+          type="button"
+          className="mt-1 px-2 text-xs font-semibold text-primary hover:underline"
+          onClick={() => setIsExpanded((current) => !current)}
+        >
+          {isExpanded ? "Ler menos" : "Ler mais"}
+        </button>
+      ) : null}
+    </>
   )
 }
 
@@ -3818,6 +4809,7 @@ function ContactInfoPanel({
   mediaCount,
   mediaItems,
   messageCount,
+  presence,
   onClearConversation,
   onClose,
   onEditNoteChange,
@@ -3847,6 +4839,7 @@ function ContactInfoPanel({
   mediaCount: number
   mediaItems: WhatsAppChatMessage[]
   messageCount: number
+  presence: ConversationPresenceState | null
   onClearConversation: () => void
   onClose: () => void
   onEditNoteChange: (value: boolean) => void
@@ -4020,10 +5013,18 @@ function ContactInfoPanel({
       />
       <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">
         <div className="flex flex-col items-center border-b border-border/80 py-5 text-center">
-          <AvatarBubble conversation={conversation} large />
+          <AvatarBubble conversation={conversation} large presence={presence} />
           <div className="mt-4 text-xl font-semibold">{conversation.name}</div>
           <div className="mt-1 text-sm text-muted-foreground">
             {conversation.formattedNumber}
+          </div>
+          <div
+            className={cn(
+              "mt-1 text-sm text-muted-foreground",
+              presence && presence.kind !== "offline" && "font-medium text-primary"
+            )}
+          >
+            {getConversationPresenceLabel(presence) ?? "offline"}
           </div>
           <Button
             type="button"
@@ -4419,10 +5420,10 @@ function EmptyPanelState({
 
 function AttachmentMenu({
   disabled,
-  onSelect,
+  onUpload,
 }: {
   disabled?: boolean
-  onSelect: (kind: UploadKind) => void
+  onUpload: (file: File | null, kind: UploadKind) => void
 }) {
   return (
     <DropdownMenu>
@@ -4434,90 +5435,115 @@ function AttachmentMenu({
         <PlusIcon />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="top" className="w-56">
-        <DropdownMenuItem
-          className="gap-3"
-          onSelect={(event) => {
-            event.preventDefault()
-            onSelect("document")
-          }}
-        >
-          <FileIcon className="size-4 text-primary" />
-          Documento
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          className="gap-3"
-          onSelect={(event) => {
-            event.preventDefault()
-            onSelect("media")
-          }}
-        >
-          <ImageIcon className="size-4 text-primary" />
-          Fotos e videos
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          className="gap-3"
-          onSelect={(event) => {
-            event.preventDefault()
-            onSelect("audio")
-          }}
-        >
-          <MicIcon className="size-4 text-primary" />
-          <span className="flex flex-col">
-            <span>Audio</span>
-            <span className="text-xs text-muted-foreground">
-              Mensagem de audio
-            </span>
-          </span>
-        </DropdownMenuItem>
+        <UploadMenuItem
+          accept={DOCUMENT_UPLOAD_ACCEPT}
+          disabled={disabled}
+          icon={FileIcon}
+          kind="document"
+          label="Documento"
+          onUpload={onUpload}
+        />
+        <UploadMenuItem
+          accept={MEDIA_UPLOAD_ACCEPT}
+          disabled={disabled}
+          icon={ImageIcon}
+          kind="media"
+          label="Fotos e videos"
+          onUpload={onUpload}
+        />
+        <UploadMenuItem
+          accept={AUDIO_UPLOAD_ACCEPT}
+          disabled={disabled}
+          icon={MicIcon}
+          kind="audio"
+          label="Audio"
+          onUpload={onUpload}
+        />
       </DropdownMenuContent>
     </DropdownMenu>
   )
 }
 
-function UploadInputs({
-  audioRef,
-  documentRef,
-  mediaRef,
+function UploadMenuItem({
+  accept,
+  disabled,
+  icon: Icon,
+  kind,
+  label,
   onUpload,
 }: {
-  audioRef: React.RefObject<HTMLInputElement | null>
-  documentRef: React.RefObject<HTMLInputElement | null>
-  mediaRef: React.RefObject<HTMLInputElement | null>
+  accept: string
+  disabled?: boolean
+  icon: React.ComponentType<{ className?: string }>
+  kind: UploadKind
+  label: string
   onUpload: (file: File | null, kind: UploadKind) => void
 }) {
   return (
-    <>
+    <label
+      className={cn(
+        "flex cursor-pointer items-center gap-3 rounded-md px-2 py-2 text-sm outline-hidden transition hover:bg-accent hover:text-accent-foreground",
+        disabled && "pointer-events-none opacity-50"
+      )}
+    >
+      <Icon className="size-4 text-primary" />
+      <span>{label}</span>
       <input
-        ref={documentRef}
         type="file"
         className="sr-only"
-        accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,.rar,application/pdf,text/plain,text/csv,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        accept={accept}
+        disabled={disabled}
         onChange={(event) => {
-          onUpload(event.target.files?.[0] ?? null, "document")
+          onUpload(event.target.files?.[0] ?? null, kind)
           event.currentTarget.value = ""
         }}
       />
-      <input
-        ref={mediaRef}
-        type="file"
-        className="sr-only"
-        accept="image/*,video/*"
-        onChange={(event) => {
-          onUpload(event.target.files?.[0] ?? null, "media")
-          event.currentTarget.value = ""
-        }}
-      />
-      <input
-        ref={audioRef}
-        type="file"
-        className="sr-only"
-        accept="audio/*,.mp3,.m4a,.ogg,.oga,.wav,.aac,.opus,.webm"
-        onChange={(event) => {
-          onUpload(event.target.files?.[0] ?? null, "audio")
-          event.currentTarget.value = ""
-        }}
-      />
-    </>
+    </label>
+  )
+}
+
+function EmojiPickerButton({
+  disabled,
+  onSelect,
+}: {
+  disabled?: boolean
+  onSelect: (emoji: string) => void
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            type="button"
+            size="icon-lg"
+            variant="ghost"
+            disabled={disabled}
+            aria-label="Selecionar emoji"
+          />
+        }
+      >
+        <SmileIcon />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="start"
+        side="top"
+        className="w-80 p-2"
+      >
+        <div className="grid max-h-72 grid-cols-8 gap-1 overflow-y-auto pr-1">
+          {EMOJI_OPTIONS.map((emoji, index) => (
+            <button
+              key={`${emoji}-${index}`}
+              type="button"
+              className="flex size-9 items-center justify-center rounded-md text-xl transition hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label={`Emoji ${emoji}`}
+              onClick={() => onSelect(emoji)}
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -4644,14 +5670,16 @@ function MediaUploadComposer({
   isSending,
   media,
   message,
+  onEmojiSelect,
   onMessageChange,
-  onOpenUpload,
+  onUpload,
 }: {
   isSending: boolean
   media: WhatsAppMediaPayload
   message: string
+  onEmojiSelect: (emoji: string) => void
   onMessageChange: (value: string) => void
-  onOpenUpload: (kind: UploadKind) => void
+  onUpload: (file: File | null, kind: UploadKind) => void
 }) {
   const canWriteCaption = media.mediatype !== "audio"
 
@@ -4678,14 +5706,12 @@ function MediaUploadComposer({
           </div>
         )}
         {canWriteCaption ? (
-          <Button type="button" size="icon-lg" variant="ghost">
-            <SmileIcon />
-          </Button>
+          <EmojiPickerButton onSelect={onEmojiSelect} />
         ) : null}
       </div>
       <div className="flex items-center justify-center gap-2">
         <MediaUploadThumbnail media={media} />
-        <AttachmentMenu onSelect={onOpenUpload} />
+        <AttachmentMenu onUpload={onUpload} />
         <Button
           type="submit"
           size="icon-lg"
@@ -4930,18 +5956,27 @@ function MessageMediaPreview({
   onOpen: () => void
 }) {
   const mediaType = messageTypeToMediaType(message.type)
+  const isSticker = message.type.includes("sticker")
 
   if (mediaType === "image") {
     return (
       <button
         type="button"
-        className="group/media relative mb-2 block aspect-square w-[min(68vw,18rem)] overflow-hidden rounded-md bg-black/80 text-left"
+        className={cn(
+          "group/media relative mb-2 block aspect-square max-w-full overflow-hidden rounded-md text-left",
+          isSticker
+            ? "w-40 bg-transparent"
+            : "w-full bg-black/80"
+        )}
         onClick={onOpen}
       >
         <MediaImage
           src={message.mediaUrl ?? ""}
-          alt={message.fileName ?? "Imagem"}
-          className="size-full object-cover transition duration-200 group-hover/media:scale-[1.02]"
+          alt={message.fileName ?? (isSticker ? "Figurinha" : "Imagem")}
+          className={cn(
+            "size-full transition duration-200 group-hover/media:scale-[1.02]",
+            isSticker ? "object-contain" : "object-cover"
+          )}
         />
       </button>
     )
@@ -4951,7 +5986,7 @@ function MessageMediaPreview({
     return (
       <button
         type="button"
-        className="group/media relative mb-2 block aspect-square w-[min(68vw,18rem)] overflow-hidden rounded-md bg-black/80 text-left"
+        className="group/media relative mb-2 block aspect-square w-full max-w-full overflow-hidden rounded-md bg-black/80 text-left"
         onClick={onOpen}
       >
         <video
@@ -4985,10 +6020,12 @@ function MessageMediaPreview({
       href={message.mediaUrl ?? "#"}
       target="_blank"
       rel="noreferrer"
-      className="mb-2 flex items-center gap-2 rounded-md bg-background/70 p-2 text-xs text-muted-foreground hover:text-foreground"
+      className="mb-2 flex w-full items-center gap-2 rounded-md bg-background/70 p-2 text-xs text-muted-foreground hover:text-foreground"
     >
       <FileIcon className="size-4" />
-      <span>{message.fileName || messageTypeLabel(message.type)}</span>
+      <span className="min-w-0 truncate">
+        {message.fileName || messageTypeLabel(message.type)}
+      </span>
     </a>
   )
 }
@@ -5318,7 +6355,7 @@ function WhatsAppAudioPlayer({
   return (
     <div
       className={cn(
-        "flex min-w-[230px] items-center gap-3 rounded-2xl bg-background/70 px-3 py-2",
+        "flex w-72 min-w-0 max-w-full items-center gap-3 rounded-2xl bg-background/70 px-3 py-2",
         className
       )}
     >
@@ -5435,33 +6472,50 @@ function MediaImage({
 function AvatarBubble({
   conversation,
   large = false,
+  presence,
 }: {
   conversation: WhatsAppConversation
   large?: boolean
+  presence?: ConversationPresenceState | null
 }) {
+  const sizeClass = large ? "size-20" : "size-10"
+  const badgeClass = large ? "size-4 border-2" : "size-3 border-2"
   const className = cn(
-    "shrink-0 rounded-lg bg-muted bg-cover bg-center",
-    large ? "size-20" : "size-10"
+    "shrink-0 rounded-full bg-muted bg-cover bg-center",
+    sizeClass
   )
 
-  if (conversation.profilePicUrl) {
-    return (
-      <span
-        aria-hidden="true"
-        className={className}
-        style={{ backgroundImage: `url(${conversation.profilePicUrl})` }}
-      />
-    )
-  }
-
-  return (
+  const avatar = conversation.profilePicUrl ? (
+    <span
+      aria-hidden="true"
+      className={className}
+      style={{ backgroundImage: `url(${conversation.profilePicUrl})` }}
+    />
+  ) : (
     <span
       className={cn(
-        "flex shrink-0 items-center justify-center rounded-lg bg-muted font-semibold",
-        large ? "size-20 text-xl" : "size-10 text-sm"
+        "flex shrink-0 items-center justify-center rounded-full bg-muted font-semibold",
+        sizeClass,
+        large ? "text-xl" : "text-sm"
       )}
     >
       {conversation.name.slice(0, 1).toUpperCase()}
+    </span>
+  )
+
+  return (
+    <span className="relative inline-flex shrink-0">
+      {avatar}
+      {presence ? (
+        <span
+          aria-hidden="true"
+          className={cn(
+            "absolute bottom-0 right-0 rounded-full border-background",
+            badgeClass,
+            presence.kind === "offline" ? "bg-muted-foreground" : "bg-primary"
+          )}
+        />
+      ) : null}
     </span>
   )
 }
@@ -5480,14 +6534,14 @@ function ContactAvatar({ contact }: { contact: EvolutionContact }) {
     return (
       <span
         aria-hidden="true"
-        className="size-9 shrink-0 rounded-lg bg-muted bg-cover bg-center"
+        className="size-9 shrink-0 rounded-full bg-muted bg-cover bg-center"
         style={{ backgroundImage: `url(${contact.profilePicUrl})` }}
       />
     )
   }
 
   return (
-    <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted text-sm font-semibold">
+    <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-semibold">
       {(contact.name || contact.formattedNumber).slice(0, 1).toUpperCase()}
     </span>
   )
@@ -5630,6 +6684,22 @@ async function postChatAction(input: Record<string, unknown>) {
   })
 
   return parseApiResponse<ChatActionResponse>(response)
+}
+
+async function syncConversationPresence(input: {
+  instanceName: string
+  number: string
+  remoteJid: string
+}) {
+  const response = await fetch("/api/evolution-whatsapp/presence", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(input),
+  })
+
+  return parseApiResponse<PresenceSyncResponse>(response)
 }
 
 function getForwardMessageText(message: WhatsAppChatMessage) {
@@ -6156,6 +7226,215 @@ function getConversationKey(conversation?: WhatsAppConversation | null) {
     : ""
 }
 
+function parseConversationListState(value?: string | null) {
+  if (!value) {
+    return {}
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {}
+    }
+
+    const result: Record<string, ConversationListState> = {}
+
+    for (const [key, rawState] of Object.entries(parsed)) {
+      if (!rawState || typeof rawState !== "object" || Array.isArray(rawState)) {
+        continue
+      }
+
+      const state = rawState as Record<string, unknown>
+      const mutedUntil =
+        typeof state.mutedUntil === "number" &&
+        Number.isFinite(state.mutedUntil)
+          ? state.mutedUntil
+          : null
+      const deletedAt =
+        typeof state.deletedAt === "string" && state.deletedAt.trim()
+          ? state.deletedAt
+          : null
+      const pinnedAt =
+        typeof state.pinnedAt === "string" && state.pinnedAt.trim()
+          ? state.pinnedAt
+          : null
+      const nextState = compactConversationListState({
+        archived: state.archived === true,
+        blocked: state.blocked === true,
+        deleted: state.deleted === true,
+        deletedAt,
+        favorite: state.favorite === true,
+        inList: state.inList === true,
+        mutedUntil,
+        pinnedAt,
+        unread: state.unread === true,
+      })
+
+      if (nextState) {
+        result[key] = nextState
+      }
+    }
+
+    return result
+  } catch {
+    return {}
+  }
+}
+
+function compactConversationListState(state: ConversationListState) {
+  const next: ConversationListState = {}
+
+  if (state.archived) {
+    next.archived = true
+  }
+
+  if (state.blocked) {
+    next.blocked = true
+  }
+
+  if (state.deleted) {
+    next.deleted = true
+
+    if (state.deletedAt) {
+      next.deletedAt = state.deletedAt
+    }
+  }
+
+  if (state.favorite) {
+    next.favorite = true
+  }
+
+  if (state.inList) {
+    next.inList = true
+  }
+
+  if (state.mutedUntil === MUTE_ALWAYS || (state.mutedUntil ?? 0) > Date.now()) {
+    next.mutedUntil = state.mutedUntil
+  }
+
+  if (state.pinnedAt) {
+    next.pinnedAt = state.pinnedAt
+  }
+
+  if (state.unread) {
+    next.unread = true
+  }
+
+  return Object.keys(next).length ? next : null
+}
+
+function isConversationMuted(
+  state?: ConversationListState,
+  now = Date.now()
+) {
+  return (
+    state?.mutedUntil === MUTE_ALWAYS ||
+    Boolean(state?.mutedUntil && state.mutedUntil > now)
+  )
+}
+
+function isConversationListFilter(value: string) {
+  return (
+    value === ARCHIVED_VALUE ||
+    value === FAVORITES_VALUE ||
+    value === LIST_VALUE
+  )
+}
+
+function isConversationVisibleInListFilter(
+  conversation: WhatsAppConversation,
+  state: ConversationListState | undefined,
+  instanceFilter: string
+) {
+  if (isConversationDeleted(conversation, state)) {
+    return false
+  }
+
+  if (instanceFilter === ARCHIVED_VALUE) {
+    return Boolean(state?.archived)
+  }
+
+  if (instanceFilter === FAVORITES_VALUE) {
+    return Boolean(state?.favorite) && !state?.archived
+  }
+
+  if (instanceFilter === LIST_VALUE) {
+    return Boolean(state?.inList) && !state?.archived
+  }
+
+  const matchesInstance =
+    instanceFilter === ALL_VALUE || conversation.instanceName === instanceFilter
+
+  return matchesInstance && !state?.archived
+}
+
+function isConversationDeleted(
+  conversation: WhatsAppConversation,
+  state?: ConversationListState
+) {
+  if (!state?.deleted) {
+    return false
+  }
+
+  if (!state.deletedAt) {
+    return true
+  }
+
+  const deletedAt = Date.parse(state.deletedAt)
+  const activityAt = getConversationActivityTime(conversation)
+
+  if (!Number.isFinite(deletedAt) || !Number.isFinite(activityAt)) {
+    return true
+  }
+
+  return activityAt <= deletedAt
+}
+
+function getConversationUnreadCount(
+  conversation: WhatsAppConversation,
+  state?: ConversationListState
+) {
+  return Math.max(conversation.unreadMessages, state?.unread ? 1 : 0)
+}
+
+function sortConversationsForList(
+  conversations: WhatsAppConversation[],
+  states: Record<string, ConversationListState>
+) {
+  return [...conversations].sort((left, right) => {
+    const leftState = states[getConversationKey(left)]
+    const rightState = states[getConversationKey(right)]
+    const leftPinnedTime = Date.parse(leftState?.pinnedAt ?? "")
+    const rightPinnedTime = Date.parse(rightState?.pinnedAt ?? "")
+    const leftIsPinned = Number.isFinite(leftPinnedTime)
+    const rightIsPinned = Number.isFinite(rightPinnedTime)
+
+    if (leftIsPinned || rightIsPinned) {
+      if (leftIsPinned && !rightIsPinned) {
+        return -1
+      }
+
+      if (!leftIsPinned && rightIsPinned) {
+        return 1
+      }
+
+      if (leftPinnedTime !== rightPinnedTime) {
+        return rightPinnedTime - leftPinnedTime
+      }
+    }
+
+    const leftTime = getConversationActivityTime(left)
+    const rightTime = getConversationActivityTime(right)
+
+    if (leftTime !== rightTime) {
+      return rightTime - leftTime
+    }
+
+    return left.name.localeCompare(right.name, "pt-BR")
+  })
+}
+
 function markSnapshotConversationRead(
   snapshot: WhatsAppChatSnapshot,
   conversationKey: string
@@ -6174,6 +7453,41 @@ function markSnapshotConversationRead(
     return {
       ...conversation,
       unreadMessages: 0,
+    }
+  })
+
+  if (!changed) {
+    return snapshot
+  }
+
+  return {
+    ...snapshot,
+    conversations: sortConversationsByActivity(conversations),
+    totals: {
+      ...snapshot.totals,
+      unread: conversations.reduce(
+        (sum, conversation) => sum + conversation.unreadMessages,
+        0
+      ),
+    },
+  }
+}
+
+function markSnapshotConversationUnread(
+  snapshot: WhatsAppChatSnapshot,
+  conversationKey: string
+) {
+  let changed = false
+  const conversations = snapshot.conversations.map((conversation) => {
+    if (getConversationKey(conversation) !== conversationKey) {
+      return conversation
+    }
+
+    changed = true
+
+    return {
+      ...conversation,
+      unreadMessages: Math.max(conversation.unreadMessages, 1),
     }
   })
 
@@ -6330,7 +7644,9 @@ function updateSnapshotConversationFromMessages(
         lastMessage.text || messageTypeLabel(lastMessage.type) || conversation.lastMessageText,
       lastMessageType: lastMessage.type,
       unreadMessages: 0,
-      updatedAt: lastMessage.timestamp ?? conversation.updatedAt,
+      updatedAt:
+        getLatestTimestamp(conversation.updatedAt, lastMessage.timestamp) ??
+        conversation.updatedAt,
     }
   })
 
@@ -6385,6 +7701,28 @@ function getConversationActivityTime(conversation: WhatsAppConversation) {
   return timestamps.length ? Math.max(...timestamps) : Number.NaN
 }
 
+function getConversationActivityTimestamp(conversation: WhatsAppConversation) {
+  return getLatestTimestamp(conversation.lastMessageAt, conversation.updatedAt)
+}
+
+function getLatestTimestamp(...values: Array<string | null | undefined>) {
+  let latestValue: string | null = null
+  let latestTime = Number.NEGATIVE_INFINITY
+
+  for (const value of values) {
+    const timestamp = Date.parse(value ?? "")
+
+    if (!Number.isFinite(timestamp) || timestamp <= latestTime) {
+      continue
+    }
+
+    latestTime = timestamp
+    latestValue = value ?? null
+  }
+
+  return latestValue
+}
+
 function getConversationLastMessageTime(conversation: WhatsAppConversation) {
   const lastMessageTime = Date.parse(conversation.lastMessageAt ?? "")
 
@@ -6406,6 +7744,203 @@ function isListPreviewMessage(message: WhatsAppChatMessage) {
     !type.includes("reaction") &&
     !type.includes("protocol")
   )
+}
+
+function parseRealtimeSyncEvent(value: string) {
+  try {
+    const parsed = JSON.parse(value)
+
+    return isRealtimeSyncEvent(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+function isRealtimeSyncEvent(value: unknown): value is WhatsAppRealtimeSyncEvent {
+  return isPlainRecord(value)
+}
+
+function createConversationPresenceState(
+  value?: string | null,
+  receivedAt?: string | null
+): ConversationPresenceState | null {
+  const kind = normalizePresenceKind(value)
+
+  if (!kind) {
+    return null
+  }
+
+  const now = Date.now()
+  const parsedReceivedAt = Date.parse(receivedAt ?? "")
+  const receivedAtTime = Number.isFinite(parsedReceivedAt)
+    ? parsedReceivedAt
+    : now
+  const expiresAt =
+    kind === "typing" || kind === "recording"
+      ? now + ACTIVE_PRESENCE_TTL_MS
+      : kind === "online"
+        ? now + ONLINE_PRESENCE_TTL_MS
+        : undefined
+
+  return {
+    expiresAt,
+    kind,
+    receivedAt: receivedAtTime,
+  }
+}
+
+function normalizePresenceKind(
+  value?: string | null
+): ConversationPresenceKind | null {
+  const normalized = value?.trim().toLowerCase()
+
+  if (!normalized) {
+    return null
+  }
+
+  if (normalized.includes("compos") || normalized.includes("typing")) {
+    return "typing"
+  }
+
+  if (normalized.includes("record")) {
+    return "recording"
+  }
+
+  if (normalized.includes("unavailable") || normalized.includes("offline")) {
+    return "offline"
+  }
+
+  if (
+    normalized.includes("available") ||
+    normalized.includes("online") ||
+    normalized.includes("paused")
+  ) {
+    return "online"
+  }
+
+  return null
+}
+
+function getPresenceStateKeys(
+  event: WhatsAppRealtimeSyncEvent,
+  conversationsByKey: Record<string, WhatsAppConversation>
+) {
+  if (!event.instanceName || !event.remoteJid) {
+    return []
+  }
+
+  const keys = new Set<string>()
+  const eventNumber = getRemoteJidNumber(event.remoteJid)
+
+  keys.add(makeConversationKey(event.instanceName, event.remoteJid))
+
+  if (eventNumber) {
+    keys.add(makePresenceNumberKey(event.instanceName, eventNumber))
+  }
+
+  for (const conversation of Object.values(conversationsByKey)) {
+    if (conversation.instanceName !== event.instanceName) {
+      continue
+    }
+
+    if (conversation.remoteJid === event.remoteJid) {
+      addConversationPresenceKeys(keys, conversation)
+      continue
+    }
+
+    if (
+      eventNumber &&
+      conversation.number.replace(/\D/g, "") === eventNumber
+    ) {
+      addConversationPresenceKeys(keys, conversation)
+    }
+  }
+
+  return [...keys]
+}
+
+function getConversationPresence(
+  conversation: WhatsAppConversation,
+  presences: Record<string, ConversationPresenceState>,
+  currentTime: number
+) {
+  const presence = getConversationPresenceKeys(conversation)
+    .map((key) => presences[key])
+    .find(Boolean)
+
+  if (!presence) {
+    return null
+  }
+
+  if (presence.expiresAt && presence.expiresAt <= currentTime) {
+    return null
+  }
+
+  return presence
+}
+
+function addConversationPresenceKeys(
+  keys: Set<string>,
+  conversation: WhatsAppConversation
+) {
+  for (const key of getConversationPresenceKeys(conversation)) {
+    keys.add(key)
+  }
+}
+
+function getConversationPresenceKeys(conversation: WhatsAppConversation) {
+  const keys = [getConversationKey(conversation)]
+  const number = conversation.number.replace(/\D/g, "")
+
+  if (number) {
+    keys.push(makePresenceNumberKey(conversation.instanceName, number))
+  }
+
+  return keys
+}
+
+function makePresenceNumberKey(instanceName: string, number: string) {
+  return `${instanceName}::phone::${number.replace(/\D/g, "")}`
+}
+
+function shouldKeepActivePresence(
+  previous: ConversationPresenceState | undefined,
+  next: ConversationPresenceState,
+  now: number
+) {
+  return Boolean(
+    previous &&
+      isActivePresenceKind(previous.kind) &&
+      !isActivePresenceKind(next.kind) &&
+      previous.expiresAt &&
+      previous.expiresAt > now
+  )
+}
+
+function isActivePresenceKind(kind: ConversationPresenceKind) {
+  return kind === "typing" || kind === "recording"
+}
+
+function getConversationPresenceLabel(
+  presence?: ConversationPresenceState | null
+) {
+  if (!presence) {
+    return null
+  }
+
+  if (presence.kind === "typing") {
+    return "digitando..."
+  }
+
+  if (presence.kind === "recording") {
+    return "gravando audio..."
+  }
+
+  return presence.kind === "online" ? "online" : "offline"
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
 }
 
 function makeConversationKey(instanceName: string, remoteJid: string) {
@@ -6663,7 +8198,7 @@ function messageTypeLabel(type: string) {
 }
 
 function messageTypeToMediaType(type: string) {
-  if (type.includes("image")) {
+  if (type.includes("image") || type.includes("sticker")) {
     return "image"
   }
 
@@ -6702,6 +8237,13 @@ function getMediaCaption(message: WhatsAppChatMessage) {
   }
 
   return text
+}
+
+function isLongMediaCaption(value: string) {
+  return (
+    value.length > MEDIA_CAPTION_COLLAPSE_CHARS ||
+    value.split(/\r?\n/).length > MEDIA_CAPTION_COLLAPSE_LINES
+  )
 }
 
 function formatMediaViewerTimestamp(value?: string | null) {

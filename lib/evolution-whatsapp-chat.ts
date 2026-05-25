@@ -166,6 +166,7 @@ const REALTIME_WEBHOOK_EVENTS = [
   "CALL",
 ] as const
 const configuredRealtimeWebhookInstances = new Set<string>()
+const UNKNOWN_PHONE_NUMBER_LABEL = "Numero indisponivel"
 
 export class WhatsAppChatError extends Error {
   status: number
@@ -481,6 +482,44 @@ export async function sendWhatsAppChatMedia({
     number: remoteJid,
     quoted,
   })
+}
+
+export async function requestWhatsAppConversationPresence({
+  instanceName,
+  number,
+  remoteJid,
+}: {
+  instanceName: string
+  number?: string | null
+  remoteJid: string
+}) {
+  if (!instanceName || !remoteJid) {
+    throw new WhatsAppChatError("Selecione uma conversa.")
+  }
+
+  if (remoteJid.includes("@g.us")) {
+    return { skipped: true }
+  }
+
+  const target = normalizePhone(number || "")
+  const fallbackTarget = remoteJid.includes("@lid") ? remoteJid : jidToNumber(remoteJid)
+  const presenceTarget = target || fallbackTarget
+
+  if (!presenceTarget) {
+    return { skipped: true }
+  }
+
+  return evolutionRequest(
+    `/chat/sendPresence/${encodeURIComponent(instanceName)}`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        delay: 1,
+        number: presenceTarget,
+        presence: "paused",
+      }),
+    }
+  )
 }
 
 export async function sendWhatsAppReaction({
@@ -1423,14 +1462,14 @@ LIMIT ${pageSize}
       .filter(Boolean) as string[]
   )
 
-  return messages
+  const messagesWithEdits = messages
     .filter(
       (message) =>
         message.isDeletedForEveryone ||
         (!message.isEditProtocol &&
           !(
-          revokedMessageIds.has(message.id) ||
-          (message.keyId ? revokedMessageIds.has(message.keyId) : false)
+            revokedMessageIds.has(message.id) ||
+            (message.keyId ? revokedMessageIds.has(message.keyId) : false)
           ))
     )
     .map((message) => {
@@ -1449,7 +1488,49 @@ LIMIT ${pageSize}
         text: editMessage.text,
       }
     })
+
+  return applyReactionMessages(messagesWithEdits).sort(compareMessages)
+}
+
+function applyReactionMessages(messages: WhatsAppChatMessage[]) {
+  const reactionMessages = messages
+    .filter((message) => message.reactionTargetKeyId)
     .sort(compareMessages)
+
+  if (!reactionMessages.length) {
+    return messages
+  }
+
+  const reactionsByTarget = new Map<string, string | null>()
+
+  for (const reactionMessage of reactionMessages) {
+    if (!reactionMessage.reactionTargetKeyId) {
+      continue
+    }
+
+    reactionsByTarget.set(
+      reactionMessage.reactionTargetKeyId,
+      reactionMessage.reaction?.trim() ? reactionMessage.reaction : null
+    )
+  }
+
+  return messages
+    .filter((message) => !message.reactionTargetKeyId)
+    .map((message) => {
+      const targetKeys = [message.keyId, message.id].filter(Boolean) as string[]
+      const matchedTargetKey = targetKeys.find((targetKey) =>
+        reactionsByTarget.has(targetKey)
+      )
+
+      if (!matchedTargetKey) {
+        return message
+      }
+
+      return {
+        ...message,
+        reaction: reactionsByTarget.get(matchedTargetKey) ?? null,
+      }
+    })
 }
 
 async function filterHiddenMessages(
@@ -1859,20 +1940,25 @@ function normalizeConversations(
       (item) => item.instanceName === row.instanceName
     )
     const remoteJid = getCanonicalConversationJid(row.remoteJid, row.lastKey)
-    const contact =
-      findContactForJid(contactMaps, row.instanceName, remoteJid) ??
-      findContactForJid(contactMaps, row.instanceName, row.remoteJid)
+    const contact = findContactForConversation(
+      contactMaps,
+      row,
+      remoteJid
+    )
     const lastText = extractMessageText(row.lastMessage, row.lastMessageType)
     const isGroup = remoteJid.includes("@g.us")
-    const number = contact?.number || jidToNumber(remoteJid)
+    const number = contact?.number || jidToDisplayNumber(remoteJid)
+    const formattedNumber = isGroup
+      ? `${row.unreadMessages ?? 0} nao lidas`
+      : formatDisplayPhoneNumber(number)
     const name =
       normalizeDisplayName(row.chatName) ||
       normalizeDisplayName(contact?.name) ||
       normalizeDisplayName(row.contactPushName) ||
       normalizeDisplayName(row.lastPushName) ||
-      (isGroup ? "Grupo sem nome" : formatPhoneNumber(number))
+      (isGroup ? "Grupo sem nome" : formattedNumber)
     const conversation: WhatsAppConversation = {
-      formattedNumber: isGroup ? `${row.unreadMessages ?? 0} nao lidas` : formatPhoneNumber(number),
+      formattedNumber,
       id: makeScopedKey(row.instanceName, remoteJid),
       instanceDisplayName: instance?.displayName ?? row.instanceName,
       instanceName: row.instanceName,
@@ -1911,6 +1997,8 @@ function normalizeMessage(row: DatabaseMessageRow): WhatsAppChatMessage {
   const media = extractMedia(row.message, row.messageType)
   const contextInfo = extractMessageContextInfo(row.message)
   const forwardingScore = readNumber(contextInfo, "forwardingScore")
+  const reaction = extractReaction(row.message)
+  const reactionTargetKeyId = extractReactionTargetKeyId(row.message)
   const protocolMessage = extractProtocolMessage(row.message)
   const isDeletedForEveryone = isRevokeProtocolMessage(protocolMessage)
   const isEditProtocol = isEditProtocolMessage(protocolMessage)
@@ -1954,7 +2042,8 @@ function normalizeMessage(row: DatabaseMessageRow): WhatsAppChatMessage {
     mimetype: media.mimetype,
     participant: row.participant,
     quoted: extractQuotedMessage(row.message),
-    reaction: extractReaction(row.message),
+    reaction,
+    reactionTargetKeyId,
     remoteJid,
     senderName: fromMe
       ? "Voce"
@@ -2075,6 +2164,8 @@ function normalizeParticipants(
 function createContactMaps(contacts: EvolutionContact[]) {
   const byScopedJid = new Map<string, EvolutionContact>()
   const byScopedNumber = new Map<string, EvolutionContact>()
+  const byScopedDisplayName = new Map<string, EvolutionContact | null>()
+  const byScopedProfilePicUrl = new Map<string, EvolutionContact | null>()
 
   for (const contact of contacts) {
     byScopedJid.set(makeScopedKey(contact.instanceName, contact.remoteJid), contact)
@@ -2082,11 +2173,48 @@ function createContactMaps(contacts: EvolutionContact[]) {
       makeScopedKey(contact.instanceName, contact.number.replace(/\D/g, "")),
       contact
     )
+    addUniqueContactMapEntry(
+      byScopedProfilePicUrl,
+      makeScopedKey(
+        contact.instanceName,
+        normalizeProfilePicIdentity(contact.profilePicUrl)
+      ),
+      contact
+    )
+
+    for (const name of [contact.name, contact.pushName]) {
+      addUniqueContactMapEntry(
+        byScopedDisplayName,
+        makeScopedKey(contact.instanceName, normalizeContactIdentityLabel(name)),
+        contact
+      )
+    }
   }
 
   return {
+    byScopedDisplayName,
     byScopedJid,
     byScopedNumber,
+    byScopedProfilePicUrl,
+  }
+}
+
+function addUniqueContactMapEntry(
+  map: Map<string, EvolutionContact | null>,
+  key: string,
+  contact: EvolutionContact
+) {
+  if (!key.endsWith("::")) {
+    if (!map.has(key)) {
+      map.set(key, contact)
+      return
+    }
+
+    const existing = map.get(key)
+
+    if (existing && existing.id !== contact.id) {
+      map.set(key, null)
+    }
   }
 }
 
@@ -2095,12 +2223,59 @@ function findContactForJid(
   instanceName: string,
   jid: string
 ) {
+  const contactByJid = contactMaps.byScopedJid.get(makeScopedKey(instanceName, jid))
+
+  if (contactByJid || isLidJid(jid)) {
+    return contactByJid ?? null
+  }
+
   return (
-    contactMaps.byScopedJid.get(makeScopedKey(instanceName, jid)) ??
     contactMaps.byScopedNumber.get(
       makeScopedKey(instanceName, jidToNumber(jid).replace(/\D/g, ""))
-    )
+    ) ??
+    null
   )
+}
+
+function findContactForConversation(
+  contactMaps: ReturnType<typeof createContactMaps>,
+  row: DatabaseConversationRow,
+  remoteJid: string
+) {
+  return (
+    findContactForJid(contactMaps, row.instanceName, remoteJid) ??
+    findContactForJid(contactMaps, row.instanceName, row.remoteJid) ??
+    findContactByConversationIdentity(contactMaps, row)
+  )
+}
+
+function findContactByConversationIdentity(
+  contactMaps: ReturnType<typeof createContactMaps>,
+  row: DatabaseConversationRow
+) {
+  const profileKey = makeScopedKey(
+    row.instanceName,
+    normalizeProfilePicIdentity(row.contactProfilePicUrl)
+  )
+  const contactByProfile = contactMaps.byScopedProfilePicUrl.get(profileKey)
+
+  if (contactByProfile) {
+    return contactByProfile
+  }
+
+  for (const name of [row.chatName, row.contactPushName, row.lastPushName]) {
+    const nameKey = makeScopedKey(
+      row.instanceName,
+      normalizeContactIdentityLabel(name)
+    )
+    const contactByName = contactMaps.byScopedDisplayName.get(nameKey)
+
+    if (contactByName) {
+      return contactByName
+    }
+  }
+
+  return null
 }
 
 async function sendEvolutionTextMessage({
@@ -2945,8 +3120,21 @@ function extractQuotedMessage(message: unknown) {
 
 function extractReaction(message: unknown) {
   const record = isRecord(message) ? message : {}
+  const reactionMessage = readRecord(record, "reactionMessage")
 
-  return readString(readRecord(record, "reactionMessage"), "text")
+  if (!reactionMessage) {
+    return null
+  }
+
+  const value = reactionMessage.text
+
+  return typeof value === "string" ? value.trim() : null
+}
+
+function extractReactionTargetKeyId(message: unknown) {
+  const record = isRecord(message) ? message : {}
+
+  return readString(readRecord(readRecord(record, "reactionMessage"), "key"), "id")
 }
 
 function extractProtocolMessage(message: unknown) {
@@ -3632,6 +3820,18 @@ function jidToNumber(jid: string) {
   return jid.split("@")[0]?.replace(/\D/g, "") ?? ""
 }
 
+function jidToDisplayNumber(jid: string) {
+  return isLidJid(jid) ? "" : jidToNumber(jid)
+}
+
+function isLidJid(jid: string) {
+  return jid.endsWith("@lid")
+}
+
+function formatDisplayPhoneNumber(value: string) {
+  return value ? formatPhoneNumber(value) : UNKNOWN_PHONE_NUMBER_LABEL
+}
+
 function formatPhoneNumber(value: string) {
   const digits = value.replace(/\D/g, "")
 
@@ -3648,6 +3848,47 @@ function formatPhoneNumber(value: string) {
 
 function normalizePhone(value: string) {
   return value.replace(/\D/g, "")
+}
+
+function normalizeProfilePicIdentity(value: unknown) {
+  const profilePicUrl = normalizeDisplayName(value)
+
+  if (!profilePicUrl) {
+    return ""
+  }
+
+  try {
+    const url = new URL(profilePicUrl)
+
+    return `${url.origin}${url.pathname}`
+  } catch {
+    return profilePicUrl.split("?")[0] ?? profilePicUrl
+  }
+}
+
+function normalizeContactIdentityLabel(value: unknown) {
+  const label = normalizeDisplayName(value)
+
+  if (!label) {
+    return ""
+  }
+
+  const normalized = label
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+  const digits = normalizePhone(label)
+
+  if (normalized === "voce" || normalized === "you") {
+    return ""
+  }
+
+  if (digits && digits === label.replace(/\D/g, "") && digits.length >= 8) {
+    return ""
+  }
+
+  return normalized
 }
 
 function uniqueClean(values: string[]) {
@@ -3695,7 +3936,7 @@ function mergeConversations(
     formattedNumber:
       latest.kind === "group"
         ? latest.formattedNumber
-        : latest.formattedNumber || previous.formattedNumber,
+        : formatDisplayPhoneNumber(bestNumber),
     name: bestName,
     number: bestNumber,
     profilePicUrl: latest.profilePicUrl ?? previous.profilePicUrl,
